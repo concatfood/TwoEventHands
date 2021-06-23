@@ -83,19 +83,19 @@ def train_net(net,
             for batch in train_loader:
                 # load data
                 lnes = batch['lnes']
-                true_masks = batch['mask']
+                # true_masks = batch['mask']
                 true_mano = batch['mano']
 
                 # send to device
                 lnes = lnes.to(device=device, dtype=torch.float32)
-                true_masks = true_masks.to(device=device, dtype=torch.long)
+                # true_masks = true_masks.to(device=device, dtype=torch.long)
                 true_mano = true_mano.to(device=device, dtype=torch.float32)
 
                 # forward and loss computation
                 masks_pred, mano_pred = net(lnes)
-                loss_mask = criterion_mask(masks_pred, true_masks)
+                # loss_mask = criterion_mask(masks_pred, true_masks)
                 loss_mano = criterion_mano(mano_pred, true_mano)
-                loss_total = loss_mask + loss_mano
+                loss_total = loss_mano  # loss_mask + loss_mano
                 epoch_loss += loss_total
                 writer.add_scalar('Loss/train', loss_total.item(), global_step)
 
@@ -115,7 +115,7 @@ def train_net(net,
                     for tag, value in net.named_parameters():
                         tag = tag.replace('.', '/')
                         writer.add_histogram('weights/' + tag, value.data.cpu().numpy(), global_step)
-                        writer.add_histogram('grads/' + tag, value.grad.data.cpu().numpy(), global_step)
+                        # writer.add_histogram('grads/' + tag, value.grad.data.cpu().numpy(), global_step)
 
                     val_score = eval_net(net, val_loader, device)
                     scheduler.step(val_score)
@@ -156,7 +156,7 @@ def train_net(net,
 def get_args():
     parser = argparse.ArgumentParser(description='Train the UNet on LNES and target masks',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('-e', '--epochs', metavar='E', type=int, default=5,
+    parser.add_argument('-e', '--epochs', metavar='E', type=int, default=150,
                         help='Number of epochs', dest='epochs')
     parser.add_argument('-b', '--batch-size', metavar='B', type=int, nargs='?', default=1,
                         help='Batch size', dest='batchsize')
@@ -186,6 +186,8 @@ if __name__ == '__main__':
             torch.load(args.load, map_location=device)
         )
         logging.info(f'Model loaded from {args.load}')
+
+    net.load_unet('checkpoints/ondemand/CP_epoch_best.pth', device)
 
     net.to(device=device)
 

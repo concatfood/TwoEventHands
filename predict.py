@@ -4,12 +4,13 @@ import os
 
 import math
 import numpy as np
+import pickle
 import torch
 import torch.nn.functional as F
 from PIL import Image
 from torchvision import transforms
 
-from unet import UNet
+from TEHNet import TEHNet
 from utils.dataset import BasicDataset
 
 # LNES window length
@@ -17,7 +18,23 @@ l_lnes = 100
 res = (240, 180)
 
 
-# load events for one LNES frame
+# loads mano parameters
+def load_mano(mano_file):
+    with open(mano_file, 'rb') as f:
+        seq_dict = pickle.load(f)
+        entries = np.zeros((len(seq_dict), 102))
+
+        for e in range(len(seq_dict)):
+            frame = seq_dict[e]
+
+            for h, hand in enumerate(frame):
+                entries[e, h * 51 + 0:h * 51 + 3] = hand['trans']
+                entries[e, h * 51 + 3:h * 51 + 51] = hand['pose']
+
+    return entries
+
+
+# loads events
 def load_events(events_file):
     with open(events_file) as f:
         content = f.readlines()
@@ -49,12 +66,11 @@ def load_events(events_file):
     return events
 
 
-# predict output for one LNES frame
-def predict_lnes(net,
-                lnes,
-                device,
-                scale_factor=1,
-                out_threshold=0.5):
+# predict segmentation mask and MANO parameters
+def predict_mask(net,
+                  lnes,
+                  device,
+                  out_threshold=0.5):
     net.eval()
 
     lnes = torch.from_numpy(lnes)
@@ -62,9 +78,9 @@ def predict_lnes(net,
     lnes = lnes.to(device=device, dtype=torch.float32)
 
     with torch.no_grad():
-        output = net(lnes)
+        mask_output, _ = net(lnes)
 
-        probs = F.softmax(output, dim=1)
+        probs = F.softmax(mask_output, dim=1)
         probs = probs.squeeze(0)
 
         tf = transforms.Compose(
@@ -81,9 +97,62 @@ def predict_lnes(net,
     return full_mask > out_threshold
 
 
+# predict MANO parameters
+def predict_mano(net,
+                 lnes,
+                 device):
+    net.eval()
+
+    lnes = torch.from_numpy(lnes)
+    lnes = lnes.unsqueeze(0)
+    lnes = lnes.to(device=device, dtype=torch.float32)
+
+    with torch.no_grad():
+        _, mano_output = net(lnes)
+
+        params = mano_output.squeeze(0)
+        params = params.cpu().numpy()
+
+    return params
+
+
+# predict segmentation mask and MANO parameters
+def predict(net,
+            lnes,
+            device,
+            out_threshold=0.5):
+    net.eval()
+
+    lnes = torch.from_numpy(lnes)
+    lnes = lnes.unsqueeze(0)
+    lnes = lnes.to(device=device, dtype=torch.float32)
+
+    with torch.no_grad():
+        mask_output, mano_output = net(lnes)
+
+        probs = F.softmax(mask_output, dim=1)
+        probs = probs.squeeze(0)
+
+        tf = transforms.Compose(
+            [
+                transforms.ToPILImage(),
+                transforms.Resize(lnes.shape[2]),
+                transforms.ToTensor()
+            ]
+        )
+
+        probs = tf(probs.cpu())
+        full_mask = probs.squeeze().cpu().numpy()
+
+        params = mano_output.squeeze(0)
+        params = params.cpu().numpy()
+
+    return full_mask > out_threshold, params
+
+
 # parse arguments
 def get_args():
-    parser = argparse.ArgumentParser(description='Predict masks from input images',
+    parser = argparse.ArgumentParser(description='Predict mask from input images',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--model', '-m', default='MODEL.pth',
                         metavar='FILE',
@@ -99,7 +168,7 @@ def get_args():
                         help="Visualize the images as they are processed",
                         default=False)
     parser.add_argument('--no-save', '-n', action='store_true',
-                        help="Do not save the output masks",
+                        help="Do not save the output mask",
                         default=False)
     parser.add_argument('--mask-threshold', '-t', type=float,
                         help="Minimum probability value to consider a mask pixel white",
@@ -118,9 +187,9 @@ def get_output_filenames(args):
     out_files = []
 
     if not args.output:
-        for f in in_files:
-            pathsplit = os.path.splitext(f)
-            out_files.append("{}_{}_OUT{}".format(pathsplit[0], frame, '.png'))
+        pathsplit = os.path.splitext(in_files[0])
+        out_files.append("{}_{}_OUT{}".format(pathsplit[0], frame, '.png'))
+        out_files.append("{}_{}_OUT{}".format(pathsplit[0], frame, '.pkl'))
     elif len(in_files) != len(args.output):
         logging.error("Input files and output files are not of the same length")
         raise SystemExit()
@@ -139,11 +208,12 @@ def mask_to_image(mask):
 # main function
 if __name__ == "__main__":
     args = get_args()
-    in_files = args.input
+    in_events = args.input[0]
+    in_mano = args.input[1]
     frame = int(args.frame[0])
     out_files = get_output_filenames(args)
 
-    net = UNet()
+    net = TEHNet()
 
     logging.info("Loading model {}".format(args.model))
 
@@ -153,25 +223,36 @@ if __name__ == "__main__":
     net.load_state_dict(torch.load(args.model, map_location=device))
 
     logging.info("Model loaded !")
+    logging.info("\nPredicting image {} ...".format(in_events))
 
-    # typically one file
-    for i, fn in enumerate(in_files):
-        logging.info("\nPredicting image {} ...".format(fn))
+    # events for one LNES window
+    frames = load_events(in_events)[frame - l_lnes + 1:frame + 1]
+    mano_true = load_mano(in_mano)[frame, :]
+    lnes = BasicDataset.preprocess_events(frames, frame - l_lnes + 1, l_lnes, res, 1)
 
-        # events for one LNES window
-        frames = load_events(fn)[frame - l_lnes + 1:frame + 1]
-        lnes = BasicDataset.preprocess_events(frames, frame - l_lnes + 1, l_lnes, res, 1)
+    mask_pred, mano_pred = predict(net=net,
+                                   lnes=lnes,
+                                   out_threshold=args.mask_threshold,
+                                   device=device)
 
-        mask = predict_lnes(net=net,
-                           lnes=lnes,
-                           scale_factor=args.scale,
-                           out_threshold=args.mask_threshold,
-                           device=device)
+    # save output
+    if not args.no_save:
+        out_fn = out_files[0]
+        result = mask_to_image(mask_pred)
+        result.save(out_files[0])
 
-        # save output
-        if not args.no_save:
-            out_fn = out_files[i]
-            result = mask_to_image(mask)
-            result.save(out_files[i])
+        logging.info("Mask saved to {}".format(out_files[0]))
 
-            logging.info("Mask saved to {}".format(out_files[i]))
+        seq_dict = {frame: [{'pose': mano_pred[3:51],
+                             'shape': np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                             'trans': mano_pred[0:3],
+                             'hand_type': 'right'},
+                            {'pose': mano_pred[54:102],
+                             'shape': np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                             'trans': mano_pred[51:54],
+                             'hand_type': 'left'}]}
+
+        with open(out_files[1], 'wb') as f:
+            pickle.dump(seq_dict, f)
+
+        logging.info("MANO parameters saved to {}".format(out_files[1]))

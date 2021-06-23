@@ -5,12 +5,13 @@ from glob import glob
 
 import math
 import numpy as np
+import pickle
 import torch
 import torch.nn.functional as F
 from PIL import Image
 from torchvision import transforms
 
-from unet import UNet
+from TEHNet import TEHNet
 from utils.dataset import BasicDataset
 
 # LNES window length
@@ -61,12 +62,11 @@ def load_events(events_dir):
     return events
 
 
-# predict output for all LNES frames
-def predict_lnes(net,
-                lnes,
-                device,
-                scale_factor=1,
-                out_threshold=0.5):
+# predict segmentation mask and MANO parameters
+def predict_mask(net,
+                  lnes,
+                  device,
+                  out_threshold=0.5):
     net.eval()
 
     lnes = torch.from_numpy(lnes)
@@ -74,9 +74,9 @@ def predict_lnes(net,
     lnes = lnes.to(device=device, dtype=torch.float32)
 
     with torch.no_grad():
-        output = net(lnes)
+        mask_output, _ = net(lnes)
 
-        probs = F.softmax(output, dim=1)
+        probs = F.softmax(mask_output, dim=1)
         probs = probs.squeeze(0)
 
         tf = transforms.Compose(
@@ -93,9 +93,62 @@ def predict_lnes(net,
     return full_mask > out_threshold
 
 
+# predict MANO parameters
+def predict_mano(net,
+                 lnes,
+                 device):
+    net.eval()
+
+    lnes = torch.from_numpy(lnes)
+    lnes = lnes.unsqueeze(0)
+    lnes = lnes.to(device=device, dtype=torch.float32)
+
+    with torch.no_grad():
+        _, mano_output = net(lnes)
+
+        params = mano_output.squeeze(0)
+        params = params.cpu().numpy()
+
+    return params
+
+
+# predict segmentation mask and MANO parameters
+def predict(net,
+            lnes,
+            device,
+            out_threshold=0.5):
+    net.eval()
+
+    lnes = torch.from_numpy(lnes)
+    lnes = lnes.unsqueeze(0)
+    lnes = lnes.to(device=device, dtype=torch.float32)
+
+    with torch.no_grad():
+        mask_output, mano_output = net(lnes)
+
+        probs = F.softmax(mask_output, dim=1)
+        probs = probs.squeeze(0)
+
+        tf = transforms.Compose(
+            [
+                transforms.ToPILImage(),
+                transforms.Resize(lnes.shape[2]),
+                transforms.ToTensor()
+            ]
+        )
+
+        probs = tf(probs.cpu())
+        full_mask = probs.squeeze().cpu().numpy()
+
+        params = mano_output.squeeze(0)
+        params = params.cpu().numpy()
+
+    return full_mask > out_threshold, params
+
+
 # parse arguments
 def get_args():
-    parser = argparse.ArgumentParser(description='Predict masks from input images',
+    parser = argparse.ArgumentParser(description='Predict mask from input images',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--model', '-m', default='MODEL.pth',
                         metavar='FILE',
@@ -109,7 +162,7 @@ def get_args():
                         help="Visualize the images as they are processed",
                         default=False)
     parser.add_argument('--no-save', '-n', action='store_true',
-                        help="Do not save the output masks",
+                        help="Do not save the output mask",
                         default=False)
     parser.add_argument('--mask-threshold', '-t', type=float,
                         help="Minimum probability value to consider a mask pixel white",
@@ -134,7 +187,7 @@ if __name__ == "__main__":
 
     events = load_events(in_files)
 
-    net = UNet()
+    net = TEHNet()
 
     logging.info("Loading model {}".format(args.model))
 
@@ -146,6 +199,8 @@ if __name__ == "__main__":
     logging.info("Model loaded !")
 
     for s, sequence in enumerate(events):
+        mano_pred_seq = {}
+
         for f in range(len(sequence) - l_lnes + 1):
             print(s, f)
             logging.info("\nPredicting sequence {} ...".format(s))
@@ -153,15 +208,37 @@ if __name__ == "__main__":
             frames = events[s][f:f + l_lnes]
             lnes = BasicDataset.preprocess_events(frames, f, l_lnes, res, 1)
 
-            mask = predict_lnes(net=net,
-                               lnes=lnes,
-                               scale_factor=args.scale,
-                               out_threshold=args.mask_threshold,
-                               device=device)
+            mask_pred = predict_mask(net=net,
+                                     lnes=lnes,
+                                     out_threshold=args.mask_threshold,
+                                     device=device)
+
+            mano_pred = predict_mano(net=net,
+                                     lnes=lnes,
+                                     device=device)
+
+            seq_dict = {f: [{'pose': mano_pred[3:51],
+                             'shape': np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                             'trans': mano_pred[0:3],
+                             'hand_type': 'right'},
+                            {'pose': mano_pred[54:102],
+                             'shape': np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                             'trans': mano_pred[51:54],
+                             'hand_type': 'left'}]}
+
+            mano_pred_seq.update(seq_dict)
 
             if not args.no_save:
                 out_fn = 'output/' + str(s) + '/' + str(f + l_lnes - 1).zfill(4) + '.png'
-                result = mask_to_image(mask)
+                result = mask_to_image(mask_pred)
                 result.save(out_fn)
 
                 logging.info("Mask saved to {}".format(out_fn))
+
+        if not args.no_save:
+            out_fn = 'output/' + str(s) + '.pkl'
+
+            with open(out_fn, 'wb') as f:
+                pickle.dump(mano_pred_seq, f)
+
+                logging.info("MANO parameters saved to {}".format(out_fn))
