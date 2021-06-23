@@ -2,6 +2,7 @@ __pycache__/
 .idea/
 
 *.mp4
+*.pkl
 *.png
 *.pth
 *.pyc
