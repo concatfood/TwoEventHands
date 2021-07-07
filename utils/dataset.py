@@ -33,8 +33,8 @@ class BasicDataset(Dataset):
                     frame = seq_dict[e]
 
                     for h, hand in enumerate(frame):
-                        entries[e, h * 51 + 0:h * 51 + 3] = hand['trans']
-                        entries[e, h * 51 + 3:h * 51 + 51] = hand['pose']
+                        entries[e, h * 51 + 0:h * 51 + 48] = hand['pose']
+                        entries[e, h * 51 + 48:h * 51 + 51] = hand['trans']
 
                 self.mano_params.append(entries)
 
@@ -78,7 +78,7 @@ class BasicDataset(Dataset):
 
         # two-dimensional ids (sequence, frame) with frame >= LNES window length
         self.ids = [(s, f - self.l_lnes) for s, sequence in enumerate(self.events) for f, frame in enumerate(sequence)
-                    if f >= l_lnes]
+                    if f >= self.l_lnes]
 
         logging.info(f'Creating dataset with {len(self.ids)} examples')
 

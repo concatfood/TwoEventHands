@@ -14,7 +14,7 @@ from TEHNet import TEHNet
 from utils.dataset import BasicDataset
 
 # LNES window length
-l_lnes = 100
+l_lnes = 200
 res = (240, 180)
 
 
@@ -28,8 +28,8 @@ def load_mano(mano_file):
             frame = seq_dict[e]
 
             for h, hand in enumerate(frame):
-                entries[e, h * 51 + 0:h * 51 + 3] = hand['trans']
-                entries[e, h * 51 + 3:h * 51 + 51] = hand['pose']
+                entries[e, h * 51 + 0:h * 51 + 48] = hand['pose']
+                entries[e, h * 51 + 48:h * 51 + 51] = hand['trans']
 
     return entries
 

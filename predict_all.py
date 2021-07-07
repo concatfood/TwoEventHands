@@ -1,11 +1,10 @@
 import argparse
 import logging
-import os
+import math
+import pickle
 from glob import glob
 
-import math
 import numpy as np
-import pickle
 import torch
 import torch.nn.functional as F
 from PIL import Image
@@ -15,7 +14,7 @@ from TEHNet import TEHNet
 from utils.dataset import BasicDataset
 
 # LNES window length
-l_lnes = 100
+l_lnes = 200
 res = (240, 180)
 
 
@@ -64,9 +63,9 @@ def load_events(events_dir):
 
 # predict segmentation mask and MANO parameters
 def predict_mask(net,
-                  lnes,
-                  device,
-                  out_threshold=0.5):
+                 lnes,
+                 device,
+                 out_threshold=0.5):
     net.eval()
 
     lnes = torch.from_numpy(lnes)
@@ -217,19 +216,19 @@ if __name__ == "__main__":
                                      lnes=lnes,
                                      device=device)
 
-            seq_dict = {f: [{'pose': mano_pred[3:51],
+            seq_dict = {f: [{'pose': mano_pred[0:48],
                              'shape': np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-                             'trans': mano_pred[0:3],
+                             'trans': mano_pred[48:51],
                              'hand_type': 'right'},
-                            {'pose': mano_pred[54:102],
+                            {'pose': mano_pred[51:99],
                              'shape': np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-                             'trans': mano_pred[51:54],
+                             'trans': mano_pred[99:102],
                              'hand_type': 'left'}]}
 
             mano_pred_seq.update(seq_dict)
 
             if not args.no_save:
-                out_fn = 'output/' + str(s) + '/' + str(f + l_lnes - 1).zfill(4) + '.png'
+                out_fn = 'output/' + str(s) + '/frame_' + str(f + l_lnes - 1).zfill(4) + '.png'
                 result = mask_to_image(mask_pred)
                 result.save(out_fn)
 

@@ -7,7 +7,7 @@ from .unet_parts import *
 
 class UNet(nn.Module):
     # n_channels = number of LNES channels, n_classes = 3 for {left, right, background}
-    def __init__(self, n_channels = 2, n_classes = 3, bilinear=True):
+    def __init__(self, n_channels=2, n_classes=3, bilinear=True):
         super(UNet, self).__init__()
         self.n_channels = n_channels
         self.n_classes = n_classes
