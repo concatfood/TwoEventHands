@@ -77,8 +77,7 @@ class BasicDataset(Dataset):
                     self.events[f][t][e, :] = np.array(events_list[f][t][e])
 
         # two-dimensional ids (sequence, frame) with frame >= LNES window length
-        self.ids = [(s, f - self.l_lnes) for s, sequence in enumerate(self.events) for f, frame in enumerate(sequence)
-                    if f >= self.l_lnes]
+        self.ids = [(s, f) for s, sequence in enumerate(self.events) for f, frame in enumerate(sequence)]
 
         logging.info(f'Creating dataset with {len(self.ids)} examples')
 
@@ -126,12 +125,12 @@ class BasicDataset(Dataset):
         idx = self.ids[i]
         s = idx[0]
         f = idx[1]
-        mask_file = glob(self.masks_dir + str(s).zfill(1) + '/frame_' + str(f + self.l_lnes - 1).zfill(4) + '.png')
+        mask_file = glob(self.masks_dir + str(s).zfill(1) + '/frame_' + str(f + 1).zfill(4) + '.png')
 
         assert len(mask_file) == 1, \
             f'Either no mask or multiple masks found for the ID {idx}: {mask_file}'
         mask = Image.open(mask_file[0])
-        frames = self.events[s][f:f + self.l_lnes]
+        frames = self.events[s][f - self.l_lnes + 1:f + 1]
 
         lnes = self.preprocess_events(frames, f, self.l_lnes, mask.size, self.scale)
         mask = self.preprocess_mask(mask, self.scale)
