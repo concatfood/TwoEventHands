@@ -163,7 +163,7 @@ def get_args():
                         help='frame in the sequence', required=True)
 
     parser.add_argument('--output', '-o', metavar='INPUT', nargs='+',
-                        help='Filenames of ouput images')
+                        help='Filenames of output images')
     parser.add_argument('--viz', '-v', action='store_true',
                         help="Visualize the images as they are processed",
                         default=False)
@@ -172,10 +172,10 @@ def get_args():
                         default=False)
     parser.add_argument('--mask-threshold', '-t', type=float,
                         help="Minimum probability value to consider a mask pixel white",
-                        default=0.5)
+                        default=0.0)
     parser.add_argument('--scale', '-s', type=float,
                         help="Scale factor for the input images",
-                        default=0.5)
+                        default=1.0)
 
     return parser.parse_args()
 
@@ -220,7 +220,7 @@ if __name__ == "__main__":
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f'Using device {device}')
     net.to(device=device)
-    net.load_state_dict(torch.load(args.model, map_location=device))
+    net.load_state_dict(torch.load(args.model, map_location=device)['model'])
 
     logging.info("Model loaded !")
     logging.info("\nPredicting image {} ...".format(in_events))
@@ -228,7 +228,7 @@ if __name__ == "__main__":
     # events for one LNES window
     frames = load_events(in_events)[frame - l_lnes + 1:frame + 1]
     mano_true = load_mano(in_mano)[frame, :]
-    lnes = BasicDataset.preprocess_events(frames, frame - l_lnes + 1, l_lnes, res, 1)
+    lnes = BasicDataset.preprocess_events(frames, frame - l_lnes + 1, res, 1.0)
 
     mask_pred, mano_pred = predict(net=net,
                                    lnes=lnes,

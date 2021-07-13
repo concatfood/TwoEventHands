@@ -31,4 +31,4 @@ def eval_net(net, loader, device):
 
             pbar.update()
 
-    return tot / n_val
+    return tot

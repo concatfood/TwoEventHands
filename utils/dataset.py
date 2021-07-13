@@ -87,16 +87,16 @@ class BasicDataset(Dataset):
 
     # convert events to LNES frames
     @classmethod
-    def preprocess_events(cls, frames, f, l_lnes, size, scale):
+    def preprocess_events(cls, frames, f_start, size, scale):
         w, h = size
         newW, newH = int(scale * w), int(scale * h)
 
         lnes = np.zeros((2, newH, newW))
 
-        for t in range(l_lnes):
+        for t in range(len(frames)):
             ts, xs, ys, ps = frames[t][:, 0], frames[t][:, 1].astype(int), frames[t][:, 2].astype(int),\
                              frames[t][:, 3].astype(int)
-            lnes[ps, ys, xs] = (ts - f) / l_lnes
+            lnes[ps, ys, xs] = (ts - f_start) / len(frames)
 
         return lnes
 
@@ -105,9 +105,10 @@ class BasicDataset(Dataset):
     def preprocess_mask(cls, pil_img, scale):
         w, h = pil_img.size
         newW, newH = int(scale * w), int(scale * h)
-        assert newW > 0 and newH > 0, 'Scale is too small'
-        pil_img = pil_img.resize((newW, newH))
 
+        assert newW > 0 and newH > 0, 'Scale is too small'
+
+        pil_img = pil_img.resize((newW, newH))
         img_nd = np.array(pil_img)
 
         if len(img_nd.shape) == 2:
@@ -125,14 +126,14 @@ class BasicDataset(Dataset):
         idx = self.ids[i]
         s = idx[0]
         f = idx[1]
-        mask_file = glob(self.masks_dir + str(s).zfill(1) + '/frame_' + str(f + 1).zfill(4) + '.png')
+        mask_file = glob(self.masks_dir + str(s).zfill(1) + '/frame_' + str(f + 1).zfill(6) + '.png')
 
-        assert len(mask_file) == 1, \
-            f'Either no mask or multiple masks found for the ID {idx}: {mask_file}'
+        assert len(mask_file) == 1, f'Either no mask or multiple masks found for the ID {idx}: {mask_file}'
+
         mask = Image.open(mask_file[0])
         frames = self.events[s][f - self.l_lnes + 1:f + 1]
 
-        lnes = self.preprocess_events(frames, f, self.l_lnes, mask.size, self.scale)
+        lnes = self.preprocess_events(frames, f - self.l_lnes + 1, mask.size, self.scale)
         mask = self.preprocess_mask(mask, self.scale)
         mano_params = self.mano_params[s][f, :]
 

@@ -156,7 +156,7 @@ def get_args():
                         help='filenames of input images', required=True)
 
     parser.add_argument('--output', '-o', metavar='INPUT', nargs='+',
-                        help='Filenames of ouput images')
+                        help='Filenames of output images')
     parser.add_argument('--viz', '-v', action='store_true',
                         help="Visualize the images as they are processed",
                         default=False)
@@ -165,10 +165,10 @@ def get_args():
                         default=False)
     parser.add_argument('--mask-threshold', '-t', type=float,
                         help="Minimum probability value to consider a mask pixel white",
-                        default=0.5)
+                        default=0.0)
     parser.add_argument('--scale', '-s', type=float,
                         help="Scale factor for the input images",
-                        default=0.5)
+                        default=1.0)
 
     return parser.parse_args()
 
@@ -193,19 +193,19 @@ if __name__ == "__main__":
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f'Using device {device}')
     net.to(device=device)
-    net.load_state_dict(torch.load(args.model, map_location=device))
+    net.load_state_dict(torch.load(args.model, map_location=device)['model'])
 
     logging.info("Model loaded !")
 
     for s, sequence in enumerate(events):
         mano_pred_seq = {}
 
-        for f in range(len(sequence) - l_lnes + 1):
+        for f in range(len(sequence)):
             print(s, f)
             logging.info("\nPredicting sequence {} ...".format(s))
 
-            frames = events[s][f:f + l_lnes]
-            lnes = BasicDataset.preprocess_events(frames, f, l_lnes, res, 1)
+            frames = events[s][max(0, f - l_lnes + 1):f + 1]
+            lnes = BasicDataset.preprocess_events(frames, f - l_lnes + 1, res, 1.0)
 
             mask_pred = predict_mask(net=net,
                                      lnes=lnes,
@@ -228,7 +228,7 @@ if __name__ == "__main__":
             mano_pred_seq.update(seq_dict)
 
             if not args.no_save:
-                out_fn = 'output/' + str(s) + '/frame_' + str(f + l_lnes - 1).zfill(4) + '.png'
+                out_fn = 'output/' + str(s) + '/frame_' + str(f + 1).zfill(len(str(len(sequence)))) + '.png'
                 result = mask_to_image(mask_pred)
                 result.save(out_fn)
 

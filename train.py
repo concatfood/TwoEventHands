@@ -41,17 +41,17 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
     dataset = BasicDataset(dir_events, dir_mano, dir_mask, l_lnes, img_scale)
 
     # split such that validation set consists of the midmost parts of all sequences
-    list_val = [list(range(int(round(len(sequence) / 2 * (1 - val_percent) + l_lnes)),
+    list_val = [list(range(int(round(len(sequence) / 2 * (1 - val_percent) + l_lnes - 1)),
                            int(round(len(sequence) / 2 * (1 + val_percent))))) for sequence in dataset.events]
 
-    list_train = [list(range(l_lnes, int(round(len(sequence) / 2 * (1 - val_percent))))) +
-                  list(range(int(round(len(sequence) / 2 * (1 + val_percent) + l_lnes)), len(sequence)))
+    list_train = [list(range(l_lnes - 1, int(round(len(sequence) / 2 * (1 - val_percent))))) +
+                  list(range(int(round(len(sequence) / 2 * (1 + val_percent) + l_lnes - 1)), len(sequence)))
                   for sequence in dataset.events]
 
     for s in range(1, len(list_val)):
         len_total = 0
 
-        for i in range(1, s):
+        for i in range(0, s):
             len_total += len(dataset.events[i])
 
         list_val[s] = [item + len_total for item in list_val[s]]
@@ -59,7 +59,7 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
     for s in range(1, len(list_train)):
         len_total = 0
 
-        for i in range(1, s):
+        for i in range(0, s):
             len_total += len(dataset.events[i])
 
         list_train[s] = [item + len_total for item in list_train[s]]
@@ -73,6 +73,7 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
     val_loader = DataLoader(val, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
 
     n_train = len(train_loader)
+    n_val = len(val_loader)
 
     # TensorBoard
     writer = SummaryWriter('runs/TEHNet')
@@ -148,7 +149,7 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
 
         # log to TensorBoard
         writer.add_scalar('train loss', loss_train / n_train)
-        writer.add_scalar('valid loss', loss_valid)
+        writer.add_scalar('valid loss', loss_valid / n_val)
         writer.add_scalar('learning rate', optimizer.param_groups[0]['lr'])
 
         # check if best epoch
@@ -162,6 +163,7 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
       Best validation loss: {loss_valid_best}
       Training loss:        {loss_train}
       Validation loss:      {loss_valid}
+      Learning rate:        {optimizer.param_groups[0]['lr']}
             ''')
 
         # early stopping
