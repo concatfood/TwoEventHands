@@ -110,41 +110,47 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
       Scaling:         {img_scale}
     ''')
 
+    global_step = 0
+
     # dataset loop
     for epoch in range(epoch_start, epochs):
         net.train()
         loss_train = 0
 
         # epoch loop
-        with tqdm(total=n_train, desc='training phase') as pbar:
-            for batch in train_loader:
-                # load data
-                lnes = batch['lnes']
-                true_masks = batch['mask']
-                true_mano = batch['mano']
+        # with tqdm(total=n_train, desc='training phase') as pbar:
+        for it, batch in enumerate(train_loader):
+            # load data
+            lnes = batch['lnes']
+            true_masks = batch['mask']
+            true_mano = batch['mano']
 
-                # send to device
-                lnes = lnes.to(device=device, dtype=torch.float32)
-                true_masks = true_masks.to(device=device, dtype=torch.long)
-                true_mano = true_mano.to(device=device, dtype=torch.float32)
+            # send to device
+            lnes = lnes.to(device=device, dtype=torch.float32)
+            true_masks = true_masks.to(device=device, dtype=torch.long)
+            true_mano = true_mano.to(device=device, dtype=torch.float32)
 
-                # forward and loss computation
-                masks_pred, mano_pred = net(lnes)
-                loss_mask = criterion_mask(masks_pred, true_masks)
-                loss_mano = criterion_mano(mano_pred, true_mano)
-                loss_total = weight_mask * loss_mask + weight_mano * loss_mano
-                loss_train += loss_total.item()
+            # forward and loss computation
+            masks_pred, mano_pred = net(lnes)
+            loss_mask = criterion_mask(masks_pred, true_masks)
+            loss_mano = criterion_mano(mano_pred, true_mano)
+            loss_total = weight_mask * loss_mask + weight_mano * loss_mano
+            loss_train += loss_total.item()
 
-                # backward propagation
-                optimizer.zero_grad()
-                loss_total.backward()
-                optimizer.step()
+            # backward propagation
+            optimizer.zero_grad()
+            loss_total.backward()
+            optimizer.step()
 
-                pbar.update()
+            writer.add_text('phase, epoch, iteration', 'training, ' + str(epoch) + ', ' + str(it), global_step)
+
+            global_step += 1
+
+            # pbar.update()
 
         # validation phase
         net.eval()
-        loss_valid = eval_net(net, val_loader, device)
+        loss_valid = eval_net(net, val_loader, device, writer, epoch)
         scheduler.step(loss_valid)
 
         # log to TensorBoard
