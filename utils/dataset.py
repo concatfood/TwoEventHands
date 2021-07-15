@@ -4,8 +4,10 @@ import pickle
 import torch
 from torch.utils.data import Dataset
 import logging
-from PIL import Image
+from PIL import Image, ImageFile
 import math
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 # dataset loader
