@@ -146,8 +146,7 @@ def predict(net, lnes, device):
         params = params.cpu().numpy()
 
     indices_max = np.argmax(full_mask, axis=0)
-    prediction = np.zeros(full_mask.shape)
-    prediction[indices_max] = full_mask[indices_max]
+    prediction = (np.arange(indices_max.max()+1) == indices_max[...,None]).astype(int)
 
     return prediction, params
 
@@ -231,7 +230,8 @@ if __name__ == "__main__":
     # save output
     if not args.no_save:
         out_fn = out_files[0]
-        result = mask_to_image(mask_pred)
+        # result = mask_to_image(mask_pred)
+        result = Image.fromarray((mask_pred * 255).astype(np.uint8))
         result.save(out_files[0])
 
         logging.info("Mask saved to {}".format(out_files[0]))
