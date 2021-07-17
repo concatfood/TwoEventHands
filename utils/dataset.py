@@ -4,21 +4,17 @@ import pickle
 import torch
 from torch.utils.data import Dataset
 import logging
-from PIL import Image, ImageFile
+from PIL import Image
 import math
-
-ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 # dataset loader
 class BasicDataset(Dataset):
-    def __init__(self, events_dir, mano_dir, masks_dir, l_lnes, scale=1):
+    def __init__(self, events_dir, mano_dir, masks_dir, l_lnes):
         self.events_dir = events_dir
         self.mano_dir = mano_dir
         self.masks_dir = masks_dir
         self.l_lnes = l_lnes
-        self.scale = scale
-        assert 0 < scale <= 1, 'Scale must be between 0 and 1'
 
         # load mano frames
         mano_files = sorted(glob(self.mano_dir + '*.pkl'))
@@ -89,11 +85,8 @@ class BasicDataset(Dataset):
 
     # convert events to LNES frames
     @classmethod
-    def preprocess_events(cls, frames, f_start, size, scale):
-        w, h = size
-        newW, newH = int(scale * w), int(scale * h)
-
-        lnes = np.zeros((2, newH, newW))
+    def preprocess_events(cls, frames, f_start, size):
+        lnes = np.zeros((2, size[1], size[0]))
 
         for t in range(len(frames)):
             ts, xs, ys, ps = frames[t][:, 0], frames[t][:, 1].astype(int), frames[t][:, 2].astype(int),\
@@ -104,13 +97,7 @@ class BasicDataset(Dataset):
 
     # convert mask images to PyTorch masks
     @classmethod
-    def preprocess_mask(cls, pil_img, scale):
-        w, h = pil_img.size
-        newW, newH = int(scale * w), int(scale * h)
-
-        assert newW > 0 and newH > 0, 'Scale is too small'
-
-        pil_img = pil_img.resize((newW, newH))
+    def preprocess_mask(cls, pil_img):
         img_nd = np.array(pil_img)
 
         if len(img_nd.shape) == 2:
@@ -133,10 +120,11 @@ class BasicDataset(Dataset):
         assert len(mask_file) == 1, f'Either no mask or multiple masks found for the ID {idx}: {mask_file}'
 
         mask = Image.open(mask_file[0])
+        print(mask_file[0], mask.size)
         frames = self.events[s][f - self.l_lnes + 1:f + 1]
 
-        lnes = self.preprocess_events(frames, f - self.l_lnes + 1, mask.size, self.scale)
-        mask = self.preprocess_mask(mask, self.scale)
+        lnes = self.preprocess_events(frames, f - self.l_lnes + 1, mask.size)
+        mask = self.preprocess_mask(mask)
         mano_params = self.mano_params[s][f, :]
 
         return {

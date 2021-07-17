@@ -34,11 +34,10 @@ weight_mano = 1.0
 
 
 # training function
-def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1, save_cp=True, img_scale=1.0,
-              checkpoint=None):
+def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1, save_cp=True, checkpoint=None):
 
     # setup data loader
-    dataset = BasicDataset(dir_events, dir_mano, dir_mask, l_lnes, img_scale)
+    dataset = BasicDataset(dir_events, dir_mano, dir_mask, l_lnes)
 
     # split such that validation set consists of the midmost parts of all sequences
     list_val = [list(range(int(round(len(sequence) / 2 * (1 - val_percent) + l_lnes - 1)),
@@ -107,7 +106,6 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
       Validation size: {len(list_val)}
       Checkpoints:     {save_cp}
       Device:          {device.type}
-      Scaling:         {img_scale}
     ''')
 
     global_step = 0
@@ -210,8 +208,6 @@ def get_args():
                         help='Learning rate', dest='lr')
     parser.add_argument('-f', '--load', dest='load', type=str, default=False,
                         help='Load model from a .pth file')
-    parser.add_argument('-s', '--scale', dest='scale', type=float, default=1.0,
-                        help='Downscaling factor')
     parser.add_argument('-v', '--validation', dest='val', type=float, default=10.0,
                         help='Percent of the data that is used as validation (0-100)')
 
@@ -237,5 +233,5 @@ if __name__ == '__main__':
     net.to(device=device)
     # net = nn.DataParallel(net)
 
-    train_net(net=net, epochs=args.epochs, batch_size=args.batchsize, lr=args.lr, device=device, img_scale=args.scale,
+    train_net(net=net, epochs=args.epochs, batch_size=args.batchsize, lr=args.lr, device=device,
               val_percent=args.val / 100, checkpoint=checkpoint)

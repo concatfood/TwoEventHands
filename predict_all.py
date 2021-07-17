@@ -62,10 +62,7 @@ def load_events(events_dir):
 
 
 # predict segmentation mask and MANO parameters
-def predict_mask(net,
-                 lnes,
-                 device,
-                 out_threshold=0.5):
+def predict_mask(net, lnes, device):
     net.eval()
 
     lnes = torch.from_numpy(lnes)
@@ -89,13 +86,15 @@ def predict_mask(net,
         probs = tf(probs.cpu())
         full_mask = probs.squeeze().cpu().numpy()
 
-    return full_mask > out_threshold
+    indices_max = np.argmax(full_mask, axis=0)
+    prediction = np.zeros(full_mask.shape)
+    prediction[indices_max] = full_mask[indices_max]
+
+    return prediction
 
 
 # predict MANO parameters
-def predict_mano(net,
-                 lnes,
-                 device):
+def predict_mano(net, lnes, device):
     net.eval()
 
     lnes = torch.from_numpy(lnes)
@@ -142,7 +141,11 @@ def predict(net,
         params = mano_output.squeeze(0)
         params = params.cpu().numpy()
 
-    return full_mask > out_threshold, params
+    indices_max = np.argmax(full_mask, axis=0)
+    prediction = np.zeros(full_mask.shape)
+    prediction[indices_max] = full_mask[indices_max]
+
+    return prediction, params
 
 
 # parse arguments
@@ -163,12 +166,6 @@ def get_args():
     parser.add_argument('--no-save', '-n', action='store_true',
                         help="Do not save the output mask",
                         default=False)
-    parser.add_argument('--mask-threshold', '-t', type=float,
-                        help="Minimum probability value to consider a mask pixel white",
-                        default=0.0)
-    parser.add_argument('--scale', '-s', type=float,
-                        help="Scale factor for the input images",
-                        default=1.0)
 
     return parser.parse_args()
 
@@ -205,16 +202,9 @@ if __name__ == "__main__":
             logging.info("\nPredicting sequence {} ...".format(s))
 
             frames = events[s][max(0, f - l_lnes + 1):f + 1]
-            lnes = BasicDataset.preprocess_events(frames, f - l_lnes + 1, res, 1.0)
+            lnes = BasicDataset.preprocess_events(frames, f - l_lnes + 1, res)
 
-            mask_pred = predict_mask(net=net,
-                                     lnes=lnes,
-                                     out_threshold=args.mask_threshold,
-                                     device=device)
-
-            mano_pred = predict_mano(net=net,
-                                     lnes=lnes,
-                                     device=device)
+            mask_pred, mano_pred = predict(net=net, lnes=lnes, device=device)
 
             seq_dict = {f: [{'pose': mano_pred[0:48],
                              'shape': np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),

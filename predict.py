@@ -67,10 +67,7 @@ def load_events(events_file):
 
 
 # predict segmentation mask and MANO parameters
-def predict_mask(net,
-                  lnes,
-                  device,
-                  out_threshold=0.5):
+def predict_mask(net, lnes, device):
     net.eval()
 
     lnes = torch.from_numpy(lnes)
@@ -94,7 +91,11 @@ def predict_mask(net,
         probs = tf(probs.cpu())
         full_mask = probs.squeeze().cpu().numpy()
 
-    return full_mask > out_threshold
+    indices_max = np.argmax(full_mask, axis=0)
+    prediction = np.zeros(full_mask.shape)
+    prediction[indices_max] = full_mask[indices_max]
+
+    return prediction
 
 
 # predict MANO parameters
@@ -117,10 +118,7 @@ def predict_mano(net,
 
 
 # predict segmentation mask and MANO parameters
-def predict(net,
-            lnes,
-            device,
-            out_threshold=0.5):
+def predict(net, lnes, device):
     net.eval()
 
     lnes = torch.from_numpy(lnes)
@@ -147,7 +145,11 @@ def predict(net,
         params = mano_output.squeeze(0)
         params = params.cpu().numpy()
 
-    return full_mask > out_threshold, params
+    indices_max = np.argmax(full_mask, axis=0)
+    prediction = np.zeros(full_mask.shape)
+    prediction[indices_max] = full_mask[indices_max]
+
+    return prediction, params
 
 
 # parse arguments
@@ -170,12 +172,6 @@ def get_args():
     parser.add_argument('--no-save', '-n', action='store_true',
                         help="Do not save the output mask",
                         default=False)
-    parser.add_argument('--mask-threshold', '-t', type=float,
-                        help="Minimum probability value to consider a mask pixel white",
-                        default=0.0)
-    parser.add_argument('--scale', '-s', type=float,
-                        help="Scale factor for the input images",
-                        default=1.0)
 
     return parser.parse_args()
 
@@ -228,12 +224,9 @@ if __name__ == "__main__":
     # events for one LNES window
     frames = load_events(in_events)[frame - l_lnes + 1:frame + 1]
     mano_true = load_mano(in_mano)[frame, :]
-    lnes = BasicDataset.preprocess_events(frames, frame - l_lnes + 1, res, 1.0)
+    lnes = BasicDataset.preprocess_events(frames, frame - l_lnes + 1, res)
 
-    mask_pred, mano_pred = predict(net=net,
-                                   lnes=lnes,
-                                   out_threshold=args.mask_threshold,
-                                   device=device)
+    mask_pred, mano_pred = predict(net=net, lnes=lnes, device=device)
 
     # save output
     if not args.no_save:
