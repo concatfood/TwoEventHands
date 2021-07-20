@@ -4,8 +4,8 @@ from tqdm import tqdm
 
 
 # weights
-weight_mask = 1.0
 weight_mano = 1.0
+weight_mask = 0.1
 
 
 # evaluate network

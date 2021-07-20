@@ -17,6 +17,13 @@ from utils.dataset import BasicDataset
 l_lnes = 200
 res = (240, 180)
 
+# hands_avg + np.array([0.5 * far, 0, 0])   # far = 1.0
+pos_cam = [np.array([1.63104033, -0.23615411, 0.77483138]),
+           np.array([1.57374847, -0.24665557, 0.96311718]),
+           np.array([1.65183896, -0.36861104, 0.85237268]),
+           np.array([1.55133876, -0.24436227, 0.73017362]),
+           np.array([1.52926517, -0.19142124, 0.76753855])]
+
 
 # loads mano parameters
 def load_mano(mano_file):
@@ -236,13 +243,13 @@ if __name__ == "__main__":
 
         logging.info("Mask saved to {}".format(out_files[0]))
 
-        seq_dict = {frame: [{'pose': mano_pred[3:51],
+        seq_dict = {frame: [{'pose': mano_pred[0:48],
                              'shape': np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-                             'trans': mano_pred[0:3],
+                             'trans': mano_pred[48:51] + pos_cam,
                              'hand_type': 'right'},
-                            {'pose': mano_pred[54:102],
+                            {'pose': mano_pred[51:99],
                              'shape': np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-                             'trans': mano_pred[51:54],
+                             'trans': mano_pred[99:102] + mano_pred[48:51] + pos_cam,
                              'hand_type': 'left'}]}
 
         with open(out_files[1], 'wb') as f:

@@ -29,8 +29,8 @@ patience = 10
 l_lnes = 200
 
 # weights
-weight_mask = 1.0
 weight_mano = 1.0
+weight_mask = 0.1
 
 
 # training function
