@@ -151,9 +151,13 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
         loss_valid = eval_net(net, val_loader, device, writer, epoch)
         scheduler.step(loss_valid)
 
+        # averages over stages
+        loss_train /= n_train
+        loss_valid /= n_val
+
         # log to TensorBoard
-        writer.add_scalar('train loss', loss_train / n_train)
-        writer.add_scalar('valid loss', loss_valid / n_val)
+        writer.add_scalar('train loss', loss_train)
+        writer.add_scalar('valid loss', loss_valid)
         writer.add_scalar('learning rate', optimizer.param_groups[0]['lr'])
 
         # check if best epoch
