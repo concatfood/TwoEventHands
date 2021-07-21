@@ -8,11 +8,11 @@ from PIL import Image
 import math
 
 # hands_avg + np.array([0.5 * far, 0, 0])   # far = 1.0
-pos_cam = [np.array([1.63104033, -0.23615411, 0.77483138]),
-           np.array([1.57374847, -0.24665557, 0.96311718]),
-           np.array([1.65183896, -0.36861104, 0.85237268]),
-           np.array([1.55133876, -0.24436227, 0.73017362]),
-           np.array([1.52926517, -0.19142124, 0.76753855])]
+# pos_cam = [np.array([1.63104033, -0.23615411, 0.77483138]),
+#            np.array([1.57374847, -0.24665557, 0.96311718]),
+#            np.array([1.65183896, -0.36861104, 0.85237268]),
+#            np.array([1.55133876, -0.24436227, 0.73017362]),
+#            np.array([1.52926517, -0.19142124, 0.76753855])]
 
 
 # dataset loader
@@ -41,8 +41,8 @@ class BasicDataset(Dataset):
                         entries[e, h * 51 + 0:h * 51 + 48] = hand['pose']
                         entries[e, h * 51 + 48:h * 51 + 51] = hand['trans']
 
-                    entries[e, 1 * 51 + 48:1 * 51 + 51] -= entries[e, 0 * 51 + 48:0 * 51 + 51]
-                    entries[e, 0 * 51 + 48:0 * 51 + 51] -= pos_cam[mf]
+                    # entries[e, 1 * 51 + 48:1 * 51 + 51] -= entries[e, 0 * 51 + 48:0 * 51 + 51]
+                    # entries[e, 0 * 51 + 48:0 * 51 + 51] -= pos_cam[mf]
 
                 self.mano_params.append(entries)
 
