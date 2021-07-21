@@ -146,14 +146,13 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
 
             # pbar.update()
 
+        loss_train /= n_train
+
         # validation phase
         net.eval()
         loss_valid = eval_net(net, val_loader, device, writer, epoch)
-        scheduler.step(loss_valid)
-
-        # averages over stages
-        loss_train /= n_train
         loss_valid /= n_val
+        scheduler.step(loss_valid)
 
         # log to TensorBoard
         writer.add_scalar('train loss', loss_train)
