@@ -153,9 +153,9 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
             writer.add_text('phase, epoch, iteration', 'training, ' + str(epoch) + ', ' + str(it), global_step)
 
             if global_step >= barrier_intermediate:
-                writer.add_scalar('mano loss (intermediate)', loss_mano_intermediate / step_intermediate)
-                writer.add_scalar('mask loss (intermediate)', loss_mask_intermediate / step_intermediate)
-                writer.add_scalar('train loss (intermediate)', loss_train_intermediate / step_intermediate)
+                writer.add_scalar('mano loss (intermediate)', loss_mano_intermediate / step_intermediate, global_step)
+                writer.add_scalar('mask loss (intermediate)', loss_mask_intermediate / step_intermediate, global_step)
+                writer.add_scalar('train loss (intermediate)', loss_train_intermediate / step_intermediate, global_step)
 
                 loss_mano_intermediate = 0
                 loss_mask_intermediate = 0
@@ -177,9 +177,9 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
         scheduler.step(loss_valid)
 
         # log to TensorBoard
-        writer.add_scalar('train loss', loss_train)
-        writer.add_scalar('valid loss', loss_valid)
-        writer.add_scalar('learning rate', optimizer.param_groups[0]['lr'])
+        writer.add_scalar('train loss', loss_train, epoch)
+        writer.add_scalar('valid loss', loss_valid, epoch)
+        writer.add_scalar('learning rate', optimizer.param_groups[0]['lr'], epoch)
 
         # check if best epoch
         if loss_valid < loss_valid_best:
