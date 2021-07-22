@@ -14,7 +14,9 @@ def eval_net(net, loader, device, writer, epoch):
     mano_type = torch.float32
 
     n_val = len(loader)
-    tot = 0
+    loss_mano_total = 0
+    loss_mask_total = 0
+    loss_total = 0
     global_step = 0
 
     # with tqdm(total=n_val, desc='validation phase') as pbar:
@@ -27,8 +29,11 @@ def eval_net(net, loader, device, writer, epoch):
         with torch.no_grad():
             mask_pred, mano_pred = net(lnes)
 
-        tot += weight_mask * F.cross_entropy(mask_pred, true_masks).item()
-        tot += weight_mano * F.mse_loss(mano_pred, true_mano).item()
+        loss_mano = F.mse_loss(mano_pred, true_mano).item()
+        loss_mask = F.cross_entropy(mask_pred, true_masks).item()
+        loss_mano_total += loss_mano
+        loss_mask_total += loss_mask
+        loss_total += weight_mano * loss_mano + weight_mask * loss_mask
 
         writer.add_text('phase, epoch, iteration', 'validation, ' + str(epoch) + ', ' + str(it), global_step)
 
@@ -36,4 +41,4 @@ def eval_net(net, loader, device, writer, epoch):
 
         # pbar.update()
 
-    return tot
+    return loss_total, loss_mano_total, loss_mask_total

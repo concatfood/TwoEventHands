@@ -94,7 +94,7 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
     loss_valid_best = float('inf') if checkpoint is None else checkpoint['loss_valid_best']
 
     # start where we left of last time
-    epoch_start = 0 if checkpoint is None else checkpoint['epoch']
+    epoch_start = 0 if checkpoint is None else checkpoint['epoch'] + 1
     lr = lr if checkpoint is None else optimizer.param_groups[0]['lr']
 
     logging.info(f'''Starting training:
@@ -114,6 +114,12 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
     for epoch in range(epoch_start, epochs):
         net.train()
         loss_train = 0
+        loss_mano_intermediate = 0
+        loss_mask_intermediate = 0
+        loss_train_intermediate = 0
+
+        step_intermediate = 0.01 * len(train_loader)
+        barrier_intermediate = step_intermediate
 
         # epoch loop
         # with tqdm(total=n_train, desc='training phase') as pbar:
@@ -130,10 +136,14 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
 
             # forward and loss computation
             masks_pred, mano_pred = net(lnes)
-            loss_mask = criterion_mask(masks_pred, true_masks)
             loss_mano = criterion_mano(mano_pred, true_mano)
+            loss_mask = criterion_mask(masks_pred, true_masks)
             loss_total = weight_mask * loss_mask + weight_mano * loss_mano
-            loss_train += loss_total.item()
+            loss_total_item = loss_total.item()
+            loss_train_intermediate += loss_total_item
+            loss_mano_intermediate += loss_mano.item()
+            loss_mask_intermediate += loss_mask.item()
+            loss_train += loss_total_item
 
             # backward propagation
             optimizer.zero_grad()
@@ -141,6 +151,16 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
             optimizer.step()
 
             writer.add_text('phase, epoch, iteration', 'training, ' + str(epoch) + ', ' + str(it), global_step)
+
+            if global_step >= barrier_intermediate:
+                writer.add_scalar('mano loss (intermediate)', loss_mano_intermediate / step_intermediate)
+                writer.add_scalar('mask loss (intermediate)', loss_mask_intermediate / step_intermediate)
+                writer.add_scalar('train loss (intermediate)', loss_train_intermediate / step_intermediate)
+
+                loss_mano_intermediate = 0
+                loss_mask_intermediate = 0
+                loss_train_intermediate = 0
+                barrier_intermediate += step_intermediate
 
             global_step += 1
 
@@ -150,8 +170,10 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
 
         # validation phase
         net.eval()
-        loss_valid = eval_net(net, val_loader, device, writer, epoch)
+        loss_valid, loss_mano_valid, loss_mask_valid = eval_net(net, val_loader, device, writer, epoch)
         loss_valid /= n_val
+        loss_mano_valid /= n_val
+        loss_mask_valid /= n_val
         scheduler.step(loss_valid)
 
         # log to TensorBoard
@@ -185,7 +207,7 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
             except OSError:
                 pass
 
-            checkpoint = {'epoch': epoch + 1, 'epoch_best': epoch_best, 'loss_valid_best': loss_valid_best,
+            checkpoint = {'epoch': epoch, 'epoch_best': epoch_best, 'loss_valid_best': loss_valid_best,
                           'model': net.state_dict(), 'optimizer': optimizer.state_dict(),
                           'scheduler': scheduler.state_dict()}
 
