@@ -109,14 +109,15 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
     ''')
 
     global_step = 0
+    loss_mano_intermediate = 0
+    loss_mask_intermediate = 0
+    loss_train_intermediate = 0
 
     # dataset loop
     for epoch in range(epoch_start, epochs):
         net.train()
+
         loss_train = 0
-        loss_mano_intermediate = 0
-        loss_mask_intermediate = 0
-        loss_train_intermediate = 0
 
         step_intermediate = 0.01 * len(train_loader)
         barrier_intermediate = step_intermediate
