@@ -200,7 +200,7 @@ if __name__ == "__main__":
     for s, sequence in enumerate(events):
         mano_pred_seq = {}
 
-        for f_float in np.arange(0, len(sequence), fps_in / fps_out):
+        for i_f, f_float in enumerate(np.arange(0, len(sequence), fps_in / fps_out)):
             f = int(round(f_float))
             print(s, f)
             logging.info("\nPredicting sequence {} ...".format(s))
@@ -210,19 +210,19 @@ if __name__ == "__main__":
 
             mask_pred, mano_pred = predict(net=net, lnes=lnes, device=device)
 
-            seq_dict = {f: [{'pose': mano_pred[0:48],
-                             'shape': np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-                             'trans': mano_pred[48:51],
-                             'hand_type': 'right'},
-                            {'pose': mano_pred[51:99],
-                             'shape': np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-                             'trans': mano_pred[99:102] + mano_pred[48:51],
-                             'hand_type': 'left'}]}
+            seq_dict = {i_f: [{'pose': mano_pred[0:48],
+                               'shape': np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                               'trans': mano_pred[48:51],
+                               'hand_type': 'right'},
+                              {'pose': mano_pred[51:99],
+                               'shape': np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                               'trans': mano_pred[99:102] + mano_pred[48:51],
+                               'hand_type': 'left'}]}
 
             mano_pred_seq.update(seq_dict)
 
             if not args.no_save:
-                out_fn = 'output/' + str(s) + '/frame_' + str(f + 1).zfill(len(str(len(sequence)))) + '.png'
+                out_fn = 'output/' + str(s) + '/frame_' + str(i_f + 1).zfill(len(str(len(sequence)))) + '.png'
                 # result = mask_to_image(mask_pred)
                 result = Image.fromarray((mask_pred * 255).astype(np.uint8))
                 result.save(out_fn)

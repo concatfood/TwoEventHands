@@ -108,7 +108,10 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
       Device:          {device.type}
     ''')
 
-    global_step = 0
+    step_intermediate = 0.01 * len(train_loader)
+    barrier_intermediate = step_intermediate
+
+    global_step = 0 if checkpoint is None else checkpoint['global_step']
     loss_mano_intermediate = 0
     loss_mask_intermediate = 0
     loss_train_intermediate = 0
@@ -118,9 +121,6 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
         net.train()
 
         loss_train = 0
-
-        step_intermediate = 0.01 * len(train_loader)
-        barrier_intermediate = step_intermediate
 
         # epoch loop
         # with tqdm(total=n_train, desc='training phase') as pbar:
@@ -194,6 +194,7 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
       Training loss:        {loss_train}
       Validation loss:      {loss_valid}
       Learning rate:        {optimizer.param_groups[0]['lr']}
+      Global step:          {global_step}
             ''')
 
         # early stopping
@@ -210,7 +211,7 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
 
             checkpoint = {'epoch': epoch, 'epoch_best': epoch_best, 'loss_valid_best': loss_valid_best,
                           'model': net.state_dict(), 'optimizer': optimizer.state_dict(),
-                          'scheduler': scheduler.state_dict()}
+                          'scheduler': scheduler.state_dict(), 'global_step': global_step}
 
             torch.save(checkpoint, dir_checkpoint + f'CP_epoch_' + str(epoch).zfill(len(str(epochs - 1))) + '.pth')
             logging.info(f'Checkpoint {epoch} saved')
