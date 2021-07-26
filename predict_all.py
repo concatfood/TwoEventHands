@@ -223,7 +223,7 @@ if __name__ == "__main__":
 
             if not args.no_save:
                 out_fn = 'output/' + str(s) + '/frame_' +\
-                         str(i_f + 1).zfill(len(str(len(sequence) * fps_out / fps_in))) + '.png'
+                         str(i_f + 1).zfill(len(str(int(round(len(sequence) * fps_out / fps_in))))) + '.png'
                 # result = mask_to_image(mask_pred)
                 result = Image.fromarray((mask_pred * 255).astype(np.uint8))
                 result.save(out_fn)
