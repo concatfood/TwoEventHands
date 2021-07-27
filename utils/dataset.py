@@ -1,6 +1,7 @@
 import numpy as np
 from glob import glob
 import pickle
+from scipy.spatial.transform import Rotation as R
 import torch
 from torch.utils.data import Dataset
 import logging
@@ -32,17 +33,24 @@ class BasicDataset(Dataset):
         for mf, mano_file in enumerate(mano_files):
             with open(mano_file, 'rb') as f:
                 seq_dict = pickle.load(f)
-                entries = np.zeros((len(seq_dict), 102))
+                # entries = np.zeros((len(seq_dict), 102))  # axis-angle
+                entries = np.zeros((len(seq_dict), 134))    # quaternion
 
                 for e in range(len(seq_dict)):
                     frame = seq_dict[e]
 
                     for h, hand in enumerate(frame):
-                        entries[e, h * 51 + 0:h * 51 + 48] = hand['pose']
-                        entries[e, h * 51 + 48:h * 51 + 51] = hand['trans']
+                        # entries[e, h * 51 + 0:h * 51 + 48] = hand['pose']
+                        for j in range(16):
+                            entries[e, h * 67 + 0:h * 67 + 64] = R.from_rotvec(hand['pose'][3 * j]).as_quat()
 
-                    entries[e, 1 * 51 + 48:1 * 51 + 51] -= entries[e, 0 * 51 + 48:0 * 51 + 51]
-                    entries[e, 0 * 51 + 48:0 * 51 + 51] -= pos_cam[mf]
+                        # entries[e, h * 51 + 48:h * 51 + 51] = hand['trans']
+                        entries[e, h * 67 + 64:h * 67 + 67] = hand['trans']
+
+                    # entries[e, 1 * 51 + 48:1 * 51 + 51] -= entries[e, 0 * 51 + 48:0 * 51 + 51]
+                    # entries[e, 0 * 51 + 48:0 * 51 + 51] -= pos_cam[mf]
+                    entries[e, 1 * 67 + 64:1 * 67 + 67] -= entries[e, 0 * 67 + 64:0 * 67 + 67]
+                    entries[e, 0 * 67 + 64:0 * 67 + 67] -= pos_cam[mf]
 
                 self.mano_params.append(entries)
 

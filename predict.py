@@ -1,16 +1,15 @@
 import argparse
 import logging
-import os
-
 import math
 import numpy as np
+import os
 import pickle
+from PIL import Image
+from scipy.spatial.transform import Rotation as R
+from TEHNet import TEHNet
 import torch
 import torch.nn.functional as F
-from PIL import Image
 from torchvision import transforms
-
-from TEHNet import TEHNet
 from utils.dataset import BasicDataset
 
 # LNES window length
@@ -99,9 +98,7 @@ def predict_mask(net, lnes, device):
 
 
 # predict MANO parameters
-def predict_mano(net,
-                 lnes,
-                 device):
+def predict_mano(net, lnes, device):
     net.eval()
 
     lnes = torch.from_numpy(lnes)
@@ -113,6 +110,17 @@ def predict_mano(net,
 
         params = mano_output.squeeze(0)
         params = params.cpu().numpy()
+
+    params_axisangle = np.zeros(102)
+
+    for h in range(2):
+        for j in range(16):
+            params_axisangle[h * 51 + j * 3:h * 51 + (j + 1) * 3] =\
+                R.from_quat(params_axisangle[h * 67 + j * 4:h * 67 + (j + 1) * 4]).as_rotvec()
+
+        params_axisangle[h * 51 + 48:h * 51 + 51] = params[h * 67 + 64:h * 67 + 67]
+
+    params = params_axisangle
 
     return params
 
@@ -144,6 +152,17 @@ def predict(net, lnes, device):
 
         params = mano_output.squeeze(0)
         params = params.cpu().numpy()
+
+    params_axisangle = np.zeros(102)
+
+    for h in range(2):
+        for j in range(16):
+            params_axisangle[h * 51 + j * 3:h * 51 + (j + 1) * 3] =\
+                R.from_quat(params_axisangle[h * 67 + j * 4:h * 67 + (j + 1) * 4]).as_rotvec()
+
+        params_axisangle[h * 51 + 48:h * 51 + 51] = params[h * 67 + 64:h * 67 + 67]
+
+    params = params_axisangle
 
     indices_max = np.argmax(full_mask, axis=0)
     prediction = (np.arange(indices_max.max()+1) == indices_max[...,None]).astype(int)
