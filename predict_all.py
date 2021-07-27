@@ -113,11 +113,8 @@ def predict_mano(net, lnes, device):
     params_axisangle = np.zeros(102)
 
     for h in range(2):
-        for j in range(16):
-            params_axisangle[h * 51 + j * 3:h * 51 + (j + 1) * 3] =\
-                R.from_quat(params_axisangle[h * 67 + j * 4:h * 67 + (j + 1) * 4]).as_rotvec()
-
-        params_axisangle[h * 51 + 48:h * 51 + 51] = params[h * 67 + 64:h * 67 + 67]
+        params_axisangle[h * 67 + 0:h * 67 + 64] = R.from_rotvec(params[h * 51 + 0:h * 51 + 48].reshape(16, 3))\
+            .as_quat().reshape(1, 64)
 
     params = params_axisangle
 
@@ -155,11 +152,8 @@ def predict(net, lnes, device):
     params_axisangle = np.zeros(102)
 
     for h in range(2):
-        for j in range(16):
-            params_axisangle[h * 51 + j * 3:h * 51 + (j + 1) * 3] =\
-                R.from_quat(params_axisangle[h * 67 + j * 4:h * 67 + (j + 1) * 4]).as_rotvec()
-
-        params_axisangle[h * 51 + 48:h * 51 + 51] = params[h * 67 + 64:h * 67 + 67]
+        params_axisangle[h * 67 + 0:h * 67 + 64] = R.from_rotvec(params[h * 51 + 0:h * 51 + 48].reshape(16, 3))\
+            .as_quat().reshape(1, 64)
 
     params = params_axisangle
 

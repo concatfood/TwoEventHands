@@ -41,8 +41,8 @@ class BasicDataset(Dataset):
 
                     for h, hand in enumerate(frame):
                         # entries[e, h * 51 + 0:h * 51 + 48] = hand['pose']
-                        for j in range(16):
-                            entries[e, h * 67 + 0:h * 67 + 64] = R.from_rotvec(hand['pose'][3 * j]).as_quat()
+                        entries[e, h * 67 + 0:h * 67 + 64] = R.from_rotvec(hand['pose'][0:48].reshape(16, 3)).as_quat()\
+                            .reshape(1, 64)
 
                         # entries[e, h * 51 + 48:h * 51 + 51] = hand['trans']
                         entries[e, h * 67 + 64:h * 67 + 67] = hand['trans']
