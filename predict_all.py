@@ -90,8 +90,7 @@ def predict_mask(net, lnes, device):
         full_mask = probs.squeeze().cpu().numpy()
 
     indices_max = np.argmax(full_mask, axis=0)
-    prediction = np.zeros(full_mask.shape)
-    prediction[indices_max] = full_mask[indices_max]
+    prediction = (np.arange(3) == indices_max[..., None]).astype(int)
 
     return prediction
 
@@ -116,7 +115,6 @@ def predict_mano(net, lnes, device):
         params_axisangle[h * 51 + 0:h * 51 + 48] = R.from_quat(params[h * 67 + 0:h * 67 + 64].reshape(16, 4))\
             .as_rotvec().reshape(1, 48)
         params_axisangle[h * 51 + 48:h * 51 + 51] = params[h * 67 + 64:h * 67 + 67]
-
 
     params = params_axisangle
 
@@ -161,7 +159,7 @@ def predict(net, lnes, device):
     params = params_axisangle
 
     indices_max = np.argmax(full_mask, axis=0)
-    prediction = (np.arange(indices_max.max()+1) == indices_max[...,None]).astype(int)
+    prediction = (np.arange(3) == indices_max[..., None]).astype(int)
 
     return prediction, params
 

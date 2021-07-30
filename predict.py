@@ -91,8 +91,7 @@ def predict_mask(net, lnes, device):
         full_mask = probs.squeeze().cpu().numpy()
 
     indices_max = np.argmax(full_mask, axis=0)
-    prediction = np.zeros(full_mask.shape)
-    prediction[indices_max] = full_mask[indices_max]
+    prediction = (np.arange(3) == indices_max[..., None]).astype(int)
 
     return prediction
 
@@ -161,7 +160,7 @@ def predict(net, lnes, device):
     params = params_axisangle
 
     indices_max = np.argmax(full_mask, axis=0)
-    prediction = (np.arange(indices_max.max()+1) == indices_max[...,None]).astype(int)
+    prediction = (np.arange(3) == indices_max[..., None]).astype(int)
 
     return prediction, params
 
