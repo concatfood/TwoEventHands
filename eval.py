@@ -35,7 +35,9 @@ def eval_net(net, loader, device, writer, epoch):
         loss_mask_total += loss_mask
         loss_total += weight_mano * loss_mano + weight_mask * loss_mask
 
-        writer.add_text('phase, epoch, iteration', 'validation, ' + str(epoch) + ', ' + str(it), global_step)
+        # log phase, epoch and iteration
+        with open('phase_epoch_iteration.txt', "w") as f:
+            f.write('validation, ' + str(epoch) + ', ' + str(it))
 
         global_step += 1
 

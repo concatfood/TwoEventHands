@@ -109,12 +109,12 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
     ''')
 
     step_intermediate = 0.01 * len(train_loader)
-    barrier_intermediate = step_intermediate
+    num_steps_intermediate = 0 if checkpoint is None else checkpoint['num_steps_intermediate']
 
     global_step = 0 if checkpoint is None else checkpoint['global_step']
-    loss_mano_intermediate = 0
-    loss_mask_intermediate = 0
-    loss_train_intermediate = 0
+    loss_mano_intermediate = 0 if checkpoint is None else checkpoint['loss_mano_intermediate']
+    loss_mask_intermediate = 0 if checkpoint is None else checkpoint['loss_mask_intermediate']
+    loss_train_intermediate = 0 if checkpoint is None else checkpoint['loss_train_intermediate']
 
     # dataset loop
     for epoch in range(epoch_start, epochs):
@@ -151,9 +151,13 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
             loss_total.backward()
             optimizer.step()
 
-            writer.add_text('phase, epoch, iteration', 'training, ' + str(epoch) + ', ' + str(it), global_step)
+            # log phase, epoch and iteration
+            with open('phase_epoch_iteration.txt', "w") as f:
+                f.write('training, ' + str(epoch) + ', ' + str(it))
 
-            if global_step >= barrier_intermediate:
+            if global_step >= (num_steps_intermediate + 1) * step_intermediate:
+                num_steps_intermediate += 1
+
                 writer.add_scalar('mano loss (intermediate)', loss_mano_intermediate / step_intermediate, global_step)
                 writer.add_scalar('mask loss (intermediate)', loss_mask_intermediate / step_intermediate, global_step)
                 writer.add_scalar('train loss (intermediate)', loss_train_intermediate / step_intermediate, global_step)
@@ -161,7 +165,6 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
                 loss_mano_intermediate = 0
                 loss_mask_intermediate = 0
                 loss_train_intermediate = 0
-                barrier_intermediate += step_intermediate
 
             global_step += 1
 
@@ -209,9 +212,12 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
             except OSError:
                 pass
 
-            checkpoint = {'epoch': epoch, 'epoch_best': epoch_best, 'loss_valid_best': loss_valid_best,
-                          'model': net.state_dict(), 'optimizer': optimizer.state_dict(),
-                          'scheduler': scheduler.state_dict(), 'global_step': global_step}
+            checkpoint = {'epoch': epoch, 'epoch_best': epoch_best, 'global_step': global_step,
+                          'loss_valid_best': loss_valid_best, 'loss_mano_intermediate': loss_mano_intermediate,
+                          'loss_mask_intermediate': loss_mask_intermediate,
+                          'loss_train_intermediate': loss_train_intermediate, 'model': net.state_dict(),
+                          'num_steps_intermediate': num_steps_intermediate, 'optimizer': optimizer.state_dict(),
+                          'scheduler': scheduler.state_dict()}
 
             torch.save(checkpoint, dir_checkpoint + f'CP_epoch_' + str(epoch).zfill(len(str(epochs - 1))) + '.pth')
             logging.info(f'Checkpoint {epoch} saved')
