@@ -9,7 +9,7 @@ weight_mask = 0.1
 
 
 # evaluate network
-def eval_net(net, loader, device, writer, epoch):
+def eval_net(net, loader, device, epoch, num_it=-1):
     mask_type = torch.long
     mano_type = torch.float32
 
@@ -21,6 +21,9 @@ def eval_net(net, loader, device, writer, epoch):
 
     # with tqdm(total=n_val, desc='validation phase') as pbar:
     for it, batch in enumerate(loader):
+        if it == num_it:
+            break
+
         lnes, true_masks, true_mano = batch['lnes'], batch['mask'], batch['mano']
         lnes = lnes.to(device=device, dtype=torch.float32)
         true_masks = true_masks.to(device=device, dtype=mask_type)
@@ -43,4 +46,4 @@ def eval_net(net, loader, device, writer, epoch):
 
         # pbar.update()
 
-    return loss_total, loss_mano_total, loss_mask_total
+    return loss_total
