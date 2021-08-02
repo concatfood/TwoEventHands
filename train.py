@@ -1,19 +1,19 @@
 import argparse
+import queue
+
+from eval import eval_net
+import math
 import logging
 import os
+from queue import Queue
 from shutil import copyfile
-
 import torch
 import torch.nn as nn
 from torch import optim
 from tqdm import tqdm
-
-from eval import eval_net
-
+from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from utils.dataset import BasicDataset
-from torch.utils.data import DataLoader
-
 from TEHNet import TEHNet
 
 # relative directories
@@ -23,13 +23,14 @@ dir_mask = 'data/masks/'
 dir_checkpoint = 'checkpoints/'
 
 # early stopping
-patience = 10
+patience = 100
 
 # LNES window size
 l_lnes = 200
 
 # interval between frames
 interval_data = int(round(l_lnes / 2))
+level_split_max = int(math.floor(math.log2(interval_data)))
 
 # weights
 weight_mano = 1.0
@@ -37,13 +38,13 @@ weight_mask = 0.1
 
 
 # training function
-def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1, save_cp=True, checkpoint=None):
+def train_net(net, device, epochs=1000, batch_size=16, lr=0.001, val_percent=0.1, save_cp=True, checkpoint=None):
     # setup data loader
     dataset = BasicDataset(dir_events, dir_mano, dir_mask, l_lnes)
 
     # optimization and scheduling
     optimizer = optim.RMSprop(net.parameters(), lr=lr, weight_decay=1e-8, momentum=0.9)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=50)
 
     if checkpoint is not None:
         optimizer.load_state_dict(checkpoint['optimizer'])
@@ -61,6 +62,16 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
     epoch_start = 0 if checkpoint is None else checkpoint['epoch'] + 1
     lr = lr if checkpoint is None else optimizer.param_groups[0]['lr']
 
+    global_step = 0 if checkpoint is None else checkpoint['global_step']
+    level_split = 0 if checkpoint is None else checkpoint['level_split']
+    loss_mano_inter = 0 if checkpoint is None else checkpoint['loss_mano_inter']
+    loss_mask_inter = 0 if checkpoint is None else checkpoint['loss_mask_inter']
+    loss_train_inter = 0 if checkpoint is None else checkpoint['loss_train_inter']
+    num_steps_inter = 0 if checkpoint is None else checkpoint['num_steps_inter']
+    num_steps_val_inter = 0 if checkpoint is None else checkpoint['num_steps_val_inter']
+    num_val_phases_inter = 10 if checkpoint is None else checkpoint['num_val_phases_inter']
+    starts_split = Queue() if checkpoint is None else Queue(checkpoint['starts_split'])
+
     logging.info(f'''Starting training:
       Start epoch:     {epoch_start}
       Maximum epochs:  {epochs}
@@ -69,40 +80,41 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
       Device:          {device.type}
     ''')
 
-    global_step = 0 if checkpoint is None else checkpoint['global_step']
-    loss_mano_intermediate = 0 if checkpoint is None else checkpoint['loss_mano_intermediate']
-    loss_mask_intermediate = 0 if checkpoint is None else checkpoint['loss_mask_intermediate']
-    loss_train_intermediate = 0 if checkpoint is None else checkpoint['loss_train_intermediate']
-    num_steps_intermediate = 0 if checkpoint is None else checkpoint['num_steps_intermediate']
-    num_steps_val_intermediate = 0 if checkpoint is None else checkpoint['num_steps_val_intermediate']
-    num_val_phases_intermediate = 10 if checkpoint is None else checkpoint['num_val_phases_intermediate']
-
     # TensorBoard
     writer = SummaryWriter('runs/TEHNet')
 
     # dataset loop
     for epoch in range(epoch_start, epochs):
         # split such that validation set consists of the midmost parts of all sequences
-        list_train = [list(range(epoch % interval_data,
+        if starts_split.empty():
+            if level_split < level_split_max:
+                level_split += 1
+                start_split = interval_data / 2 ** level_split
+                interval_split = interval_data / 2 ** (level_split - 1)
+            else:
+                level_split = 1
+                start_split = interval_data / 2
+                interval_split = interval_data
+
+            starts_split = Queue()
+
+            for i in range(2 ** (level_split - 1)):
+                starts_split.put(start_split + interval_split * i)
+
+        start_split = int(round(starts_split.get())) - 1
+
+        list_train = [list(range(start_split,
                                  int(round(len(sequence) / 2 * (1 - val_percent))),
                                  interval_data)) +
-                      list(range(int(round(len(sequence) / 2 * (1 + val_percent))) + epoch % interval_data,
+                      list(range(int(round(len(sequence) / 2 * (1 + val_percent))) + start_split,
                                  len(sequence),
                                  interval_data))
                       for sequence in dataset.events]
 
-        list_val = [list(range(int(round(len(sequence) / 2 * (1 - val_percent))) + epoch % interval_data,
+        list_val = [list(range(int(round(len(sequence) / 2 * (1 - val_percent))) + start_split,
                                int(round(len(sequence) / 2 * (1 + val_percent))),
                                interval_data))
                     for sequence in dataset.events]
-
-        for s in range(1, len(list_val)):
-            len_total = 0
-
-            for i in range(0, s):
-                len_total += len(dataset.events[i])
-
-            list_val[s] = [item + len_total for item in list_val[s]]
 
         for s in range(1, len(list_train)):
             len_total = 0
@@ -112,8 +124,16 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
 
             list_train[s] = [item + len_total for item in list_train[s]]
 
-        list_val = [item for sublist in list_val for item in sublist]
+        for s in range(1, len(list_val)):
+            len_total = 0
+
+            for i in range(0, s):
+                len_total += len(dataset.events[i])
+
+            list_val[s] = [item + len_total for item in list_val[s]]
+
         list_train = [item for sublist in list_train for item in sublist]
+        list_val = [item for sublist in list_val for item in sublist]
 
         train = torch.utils.data.Subset(dataset, list_train)
         val = torch.utils.data.Subset(dataset, list_val)
@@ -123,9 +143,10 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
 
         n_train = len(train_loader)
         n_val = len(val_loader)
+        iters_val = int(round(n_val / (num_val_phases_inter - 1)))
 
-        step_intermediate = 0.01 * len(train_loader)
-        step_val_intermediate = 0.1 * len(train_loader)
+        step_inter = 0.01 * len(train_loader)
+        step_val_inter = 0.1 * len(train_loader)
         loss_train = 0
 
         net.train()
@@ -153,9 +174,9 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
             loss_mask = criterion_mask(masks_pred, true_masks)
             loss_total = weight_mask * loss_mask + weight_mano * loss_mano
             loss_total_item = loss_total.item()
-            loss_train_intermediate += loss_total_item
-            loss_mano_intermediate += loss_mano.item()
-            loss_mask_intermediate += loss_mask.item()
+            loss_train_inter += loss_total_item
+            loss_mano_inter += loss_mano.item()
+            loss_mask_inter += loss_mask.item()
             loss_train += loss_total_item
 
             # backward propagation
@@ -163,29 +184,27 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
             loss_total.backward()
             optimizer.step()
 
-            if it >= (num_steps_val_intermediate + 1) * step_val_intermediate and\
-                    num_steps_val_intermediate % num_val_phases_intermediate != 0:
-                num_steps_val_intermediate += 1
+            if global_step >= (num_steps_inter + 1) * step_inter:
+                num_steps_inter += 1
 
-                # intermediate validation phase
+                writer.add_scalar('mano loss (inter)', loss_mano_inter / step_inter, global_step)
+                writer.add_scalar('mask loss (inter)', loss_mask_inter / step_inter, global_step)
+                writer.add_scalar('train loss (inter)', loss_train_inter / step_inter, global_step)
+
+                loss_mano_inter = 0
+                loss_mask_inter = 0
+                loss_train_inter = 0
+
+            if global_step >= (num_steps_val_inter + 1) * step_val_inter:
+                num_steps_val_inter += 1
+
+                # inter validation phase
                 net.eval()
-                loss_valid = eval_net(net, val_loader_mini, device, epoch,
-                                      int(round(n_val / num_val_phases_intermediate)))
+                loss_valid = eval_net(net, val_loader_mini, device, epoch, iters_val)
                 net.train()
-                loss_valid /= n_val / num_val_phases_intermediate
+                loss_valid /= iters_val
 
-                writer.add_scalar('validation loss (intermediate)', loss_valid / step_intermediate, global_step)
-
-            if global_step >= (num_steps_intermediate + 1) * step_intermediate:
-                num_steps_intermediate += 1
-
-                writer.add_scalar('mano loss (intermediate)', loss_mano_intermediate / step_intermediate, global_step)
-                writer.add_scalar('mask loss (intermediate)', loss_mask_intermediate / step_intermediate, global_step)
-                writer.add_scalar('train loss (intermediate)', loss_train_intermediate / step_intermediate, global_step)
-
-                loss_mano_intermediate = 0
-                loss_mask_intermediate = 0
-                loss_train_intermediate = 0
+                writer.add_scalar('valid loss (inter)', loss_valid, global_step)
 
             global_step += 1
 
@@ -201,7 +220,6 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
 
         # log to TensorBoard
         writer.add_scalar('train loss', loss_train, epoch)
-        writer.add_scalar('validation loss (intermediate)', loss_valid, global_step)
         writer.add_scalar('valid loss', loss_valid, epoch)
         writer.add_scalar('learning rate', optimizer.param_groups[0]['lr'], epoch)
 
@@ -233,13 +251,13 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
                 pass
 
             checkpoint = {'epoch': epoch, 'epoch_best': epoch_best, 'global_step': global_step,
-                          'loss_valid_best': loss_valid_best, 'loss_mano_intermediate': loss_mano_intermediate,
-                          'loss_mask_intermediate': loss_mask_intermediate,
-                          'loss_train_intermediate': loss_train_intermediate, 'model': net.state_dict(),
-                          'num_steps_intermediate': num_steps_intermediate,
-                          'num_steps_val_intermediate': num_steps_val_intermediate, 'optimizer': optimizer.state_dict(),
-                          'num_val_phases_intermediate': num_val_phases_intermediate,
-                          'scheduler': scheduler.state_dict()}
+                          'level_split': level_split, 'loss_valid_best': loss_valid_best,
+                          'loss_mano_inter': loss_mano_inter, 'loss_mask_inter': loss_mask_inter,
+                          'loss_train_inter': loss_train_inter, 'model': net.state_dict(),
+                          'num_steps_inter': num_steps_inter,
+                          'num_steps_val_inter': num_steps_val_inter, 'optimizer': optimizer.state_dict(),
+                          'num_val_phases_inter': num_val_phases_inter,
+                          'scheduler': scheduler.state_dict(), 'starts_split': list(starts_split.queue)}
 
             torch.save(checkpoint, dir_checkpoint + f'CP_epoch_' + str(epoch).zfill(len(str(epochs - 1))) + '.pth')
             logging.info(f'Checkpoint {epoch} saved')
@@ -255,7 +273,7 @@ def train_net(net, device, epochs=100, batch_size=16, lr=0.001, val_percent=0.1,
 def get_args():
     parser = argparse.ArgumentParser(description='Train the UNet on LNES and target masks',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('-e', '--epochs', metavar='E', type=int, default=100,
+    parser.add_argument('-e', '--epochs', metavar='E', type=int, default=1000,
                         help='Number of epochs', dest='epochs')
     parser.add_argument('-b', '--batch-size', metavar='B', type=int, nargs='?', default=16,
                         help='Batch size', dest='batchsize')
