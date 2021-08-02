@@ -1,6 +1,4 @@
 import argparse
-import queue
-
 from eval import eval_net
 import math
 import logging
