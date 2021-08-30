@@ -1,9 +1,9 @@
 import argparse
 from eval import eval_net
-import math
 import logging
+import math
+import numpy as np
 import os
-from queue import Queue
 from shutil import copyfile
 import torch
 import torch.nn as nn
@@ -15,30 +15,58 @@ from utils.dataset import BasicDataset
 from TEHNet import TEHNet
 
 # relative directories
-dir_events = 'data/events/'
-dir_mano = 'data/mano/'
-dir_mask = 'data/masks/'
-dir_checkpoint = 'checkpoints/'
+dir_events = os.path.join('data', 'train', 'events')
+dir_mano = os.path.join('data', 'train', 'mano')
+dir_mask = os.path.join('data', 'train', 'masks')
+dir_checkpoint = 'checkpoints'
 
 # early stopping
 patience = 100
 
+# resolution
+res = (240, 180)
+
 # LNES window size
 l_lnes = 200
-
-# interval between frames
-interval_data = int(round(l_lnes / 2))
-level_split_max = int(math.floor(math.log2(interval_data)))
 
 # weights
 weight_mano = 1.0
 weight_mask = 0.1
 
+# use UNet for masks
+use_unet = False
+
 
 # training function
-def train_net(net, device, epochs=1000, batch_size=16, lr=0.001, val_percent=0.1, save_cp=True, checkpoint=None):
+def train_net(net, device, epochs=1000, batch_size=16, lr=0.0001, val_percent=0.1, save_cp=True, checkpoint=None):
     # setup data loader
-    dataset = BasicDataset(dir_events, dir_mano, dir_mask, l_lnes)
+    dataset = BasicDataset(dir_events, dir_mano, dir_mask, res, l_lnes, use_unet=use_unet)
+
+    # split such that validation set consists of the midmost parts of all sequences
+    list_train_np = [np.array(list(range(0,
+                                         int(round(num_frames / 2 * (1 - val_percent))))) +
+                              list(range(int(round(num_frames / 2 * (1 + val_percent))),
+                                         num_frames)))
+                     for num_frames in dataset.num_frames]
+
+    list_val_np = [np.array(list(range(int(round(num_frames / 2 * (1 - val_percent))),
+                                       int(round(num_frames / 2 * (1 + val_percent))))))
+                   for num_frames in dataset.num_frames]
+
+    for s in range(1, len(list_train_np)):
+        list_train_np[s] += dataset.len_until[s]
+
+    list_train = np.concatenate(list_train_np).tolist()
+
+    for s in range(1, len(list_val_np)):
+        list_val_np[s] += dataset.len_until[s]
+
+    list_val = np.concatenate(list_val_np).tolist()
+
+    train = torch.utils.data.Subset(dataset, list_train)
+    val = torch.utils.data.Subset(dataset, list_val)
+    train_loader = DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
+    val_loader = DataLoader(val, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
 
     # optimization and scheduling
     optimizer = optim.RMSprop(net.parameters(), lr=lr, weight_decay=1e-8, momentum=0.9)
@@ -61,14 +89,6 @@ def train_net(net, device, epochs=1000, batch_size=16, lr=0.001, val_percent=0.1
     lr = lr if checkpoint is None else optimizer.param_groups[0]['lr']
 
     global_step = 0 if checkpoint is None else checkpoint['global_step']
-    level_split = 0 if checkpoint is None else checkpoint['level_split']
-    loss_mano_inter = 0 if checkpoint is None else checkpoint['loss_mano_inter']
-    loss_mask_inter = 0 if checkpoint is None else checkpoint['loss_mask_inter']
-    loss_train_inter = 0 if checkpoint is None else checkpoint['loss_train_inter']
-    num_steps_inter = 0 if checkpoint is None else checkpoint['num_steps_inter']
-    num_steps_val_inter = 0 if checkpoint is None else checkpoint['num_steps_val_inter']
-    num_val_phases_inter = 10 if checkpoint is None else checkpoint['num_val_phases_inter']
-    starts_split = Queue() if checkpoint is None else Queue(checkpoint['starts_split'])
 
     logging.info(f'''Starting training:
       Start epoch:     {epoch_start}
@@ -78,147 +98,99 @@ def train_net(net, device, epochs=1000, batch_size=16, lr=0.001, val_percent=0.1
       Device:          {device.type}
     ''')
 
+    n_train = len(train_loader)
+    n_val = len(val_loader)
+    percentage_data = 0.001
+    iters_train = int(round(percentage_data * n_train))
+    iters_val = int(round(percentage_data * n_val))
+
     # TensorBoard
     writer = SummaryWriter('runs/TEHNet')
 
     # dataset loop
     for epoch in range(epoch_start, epochs):
-        # split such that validation set consists of the midmost parts of all sequences
-        if starts_split.empty():
-            if level_split < level_split_max:
-                level_split += 1
-                start_split = interval_data / 2 ** level_split
-                interval_split = interval_data / 2 ** (level_split - 1)
-            else:
-                level_split = 1
-                start_split = interval_data / 2
-                interval_split = interval_data
-
-            starts_split = Queue()
-
-            for i in range(2 ** (level_split - 1)):
-                starts_split.put(start_split + interval_split * i)
-
-        start_split = int(round(starts_split.get())) - 1
-
-        list_train = [list(range(start_split,
-                                 int(round(len(sequence) / 2 * (1 - val_percent))),
-                                 interval_data)) +
-                      list(range(int(round(len(sequence) / 2 * (1 + val_percent))) + start_split,
-                                 len(sequence),
-                                 interval_data))
-                      for sequence in dataset.events]
-
-        list_val = [list(range(int(round(len(sequence) / 2 * (1 - val_percent))) + start_split,
-                               int(round(len(sequence) / 2 * (1 + val_percent))),
-                               interval_data))
-                    for sequence in dataset.events]
-
-        for s in range(1, len(list_train)):
-            len_total = 0
-
-            for i in range(0, s):
-                len_total += len(dataset.events[i])
-
-            list_train[s] = [item + len_total for item in list_train[s]]
-
-        for s in range(1, len(list_val)):
-            len_total = 0
-
-            for i in range(0, s):
-                len_total += len(dataset.events[i])
-
-            list_val[s] = [item + len_total for item in list_val[s]]
-
-        list_train = [item for sublist in list_train for item in sublist]
-        list_val = [item for sublist in list_val for item in sublist]
-
-        train = torch.utils.data.Subset(dataset, list_train)
-        val = torch.utils.data.Subset(dataset, list_val)
-        train_loader = DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
-        val_loader = DataLoader(val, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
-        val_loader_mini = DataLoader(val, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
-
-        n_train = len(train_loader)
-        n_val = len(val_loader)
-        iters_val = int(round(n_val / (num_val_phases_inter - 1)))
-
-        step_inter = 0.01 * len(train_loader)
-        step_val_inter = 0.1 * len(train_loader)
+        loss_train_mano = 0
+        loss_train_mask = 0
         loss_train = 0
 
         net.train()
 
         # epoch loop
-        # with tqdm(total=n_train, desc='training phase') as pbar:
+        # with tqdm(total=iters_train, desc='training phase') as pbar:
         for it, batch in enumerate(train_loader):
+            if it == iters_train:
+                break
+
             # log phase, epoch and iteration
             with open('phase_epoch_iteration.txt', "w") as f:
                 f.write('training, ' + str(epoch) + ', ' + str(it))
 
             # load data
-            lnes = batch['lnes']
-            true_masks = batch['mask']
-            true_mano = batch['mano']
+            if use_unet:
+                lnes, true_masks, true_mano = batch['lnes'], batch['mask'], batch['mano']
+            else:
+                lnes, true_mano = batch['lnes'], batch['mano']
 
             # send to device
             lnes = lnes.to(device=device, dtype=torch.float32)
-            true_masks = true_masks.to(device=device, dtype=torch.long)
+
+            if use_unet:
+                true_masks = true_masks.to(device=device, dtype=torch.long)
+
             true_mano = true_mano.to(device=device, dtype=torch.float32)
 
             # forward and loss computation
-            masks_pred, mano_pred = net(lnes)
+            if use_unet:
+                masks_pred, mano_pred = net(lnes)
+            else:
+                mano_pred = net(lnes)
+
             loss_mano = criterion_mano(mano_pred, true_mano)
-            loss_mask = criterion_mask(masks_pred, true_masks)
-            loss_total = weight_mask * loss_mask + weight_mano * loss_mano
-            loss_total_item = loss_total.item()
-            loss_train_inter += loss_total_item
-            loss_mano_inter += loss_mano.item()
-            loss_mask_inter += loss_mask.item()
-            loss_train += loss_total_item
+            loss_train_mano += loss_mano.item()
+
+            if use_unet:
+                loss_mask = criterion_mask(masks_pred, true_masks)
+                loss_train_mask += loss_mask.item()
+                loss_total = weight_mask * loss_mask + weight_mano * loss_mano
+            else:
+                loss_total = weight_mano * loss_mano
+
+            loss_train += loss_total.item()
 
             # backward propagation
             optimizer.zero_grad()
             loss_total.backward()
             optimizer.step()
 
-            if global_step >= (num_steps_inter + 1) * step_inter:
-                num_steps_inter += 1
-
-                writer.add_scalar('mano loss (inter)', loss_mano_inter / step_inter, global_step)
-                writer.add_scalar('mask loss (inter)', loss_mask_inter / step_inter, global_step)
-                writer.add_scalar('train loss (inter)', loss_train_inter / step_inter, global_step)
-
-                loss_mano_inter = 0
-                loss_mask_inter = 0
-                loss_train_inter = 0
-
-            if global_step >= (num_steps_val_inter + 1) * step_val_inter:
-                num_steps_val_inter += 1
-
-                # inter validation phase
-                net.eval()
-                loss_valid = eval_net(net, val_loader_mini, device, epoch, iters_val)
-                net.train()
-                loss_valid /= iters_val
-
-                writer.add_scalar('valid loss (inter)', loss_valid, global_step)
-
             global_step += 1
 
             # pbar.update()
 
-        loss_train /= n_train
+        loss_train /= iters_train
+        loss_train_mano /= iters_train
+        loss_train_mask /= iters_train
 
         # validation phase
         net.eval()
-        loss_valid = eval_net(net, val_loader, device, epoch)
-        loss_valid /= n_val
+        loss_valid, loss_valid_mano, loss_valid_mask = eval_net(net, val_loader, device, epoch, iters_val, use_unet)
+        loss_valid /= iters_val
+        loss_valid_mano /= iters_val
+        loss_valid_mask /= iters_val
         scheduler.step(loss_valid)
 
         # log to TensorBoard
-        writer.add_scalar('train loss', loss_train, epoch)
-        writer.add_scalar('valid loss', loss_valid, epoch)
+        writer.add_scalar('train loss total', loss_train, epoch)
+        writer.add_scalar('train loss mano', loss_train_mano, epoch)
+
+        if use_unet:
+            writer.add_scalar('train loss mask', loss_train_mask, epoch)
+
+        writer.add_scalar('valid loss total', loss_valid, epoch)
+        writer.add_scalar('valid loss mano', loss_valid_mano, epoch)
+
+        if use_unet:
+            writer.add_scalar('valid loss mask', loss_valid_mask, epoch)
+
         writer.add_scalar('learning rate', optimizer.param_groups[0]['lr'], epoch)
 
         # check if best epoch
@@ -249,20 +221,14 @@ def train_net(net, device, epochs=1000, batch_size=16, lr=0.001, val_percent=0.1
                 pass
 
             checkpoint = {'epoch': epoch, 'epoch_best': epoch_best, 'global_step': global_step,
-                          'level_split': level_split, 'loss_valid_best': loss_valid_best,
-                          'loss_mano_inter': loss_mano_inter, 'loss_mask_inter': loss_mask_inter,
-                          'loss_train_inter': loss_train_inter, 'model': net.state_dict(),
-                          'num_steps_inter': num_steps_inter,
-                          'num_steps_val_inter': num_steps_val_inter, 'optimizer': optimizer.state_dict(),
-                          'num_val_phases_inter': num_val_phases_inter,
-                          'scheduler': scheduler.state_dict(), 'starts_split': list(starts_split.queue)}
+                          'loss_valid_best': loss_valid_best, 'model': net.state_dict(),
+                          'optimizer': optimizer.state_dict(), 'scheduler': scheduler.state_dict()}
 
-            torch.save(checkpoint, dir_checkpoint + f'CP_epoch_' + str(epoch).zfill(len(str(epochs - 1))) + '.pth')
-            logging.info(f'Checkpoint {epoch} saved')
+            torch.save(checkpoint, os.path.join(dir_checkpoint, 'current.pth'))
+            logging.info(f'checkpoint {epoch} saved')
 
             if epoch == epoch_best:
-                copyfile(dir_checkpoint + f'CP_epoch_' + str(epoch).zfill(len(str(epochs - 1))) + '.pth',
-                         dir_checkpoint + f'CP_epoch_best.pth')
+                copyfile(os.path.join(dir_checkpoint, 'current.pth'), os.path.join(dir_checkpoint, 'best.pth'))
 
     writer.close()
 
@@ -275,7 +241,7 @@ def get_args():
                         help='Number of epochs', dest='epochs')
     parser.add_argument('-b', '--batch-size', metavar='B', type=int, nargs='?', default=16,
                         help='Batch size', dest='batchsize')
-    parser.add_argument('-l', '--learning-rate', metavar='LR', type=float, nargs='?', default=0.001,
+    parser.add_argument('-l', '--learning-rate', metavar='LR', type=float, nargs='?', default=0.0001,
                         help='Learning rate', dest='lr')
     parser.add_argument('-f', '--load', dest='load', type=str, default=False,
                         help='Load model from a .pth file')
@@ -292,7 +258,7 @@ if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f'Using device {device}')
 
-    net = TEHNet()
+    net = TEHNet(use_unet=use_unet)
     checkpoint = None
 
     if args.load:
@@ -304,5 +270,5 @@ if __name__ == '__main__':
     net.to(device=device)
     # net = nn.DataParallel(net)
 
-    train_net(net=net, epochs=args.epochs, batch_size=args.batchsize, lr=args.lr, device=device,
+    train_net(net=net, device=device, epochs=args.epochs, batch_size=args.batchsize, lr=args.lr,
               val_percent=args.val / 100, checkpoint=checkpoint)

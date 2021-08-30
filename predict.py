@@ -1,72 +1,53 @@
 import argparse
-import logging
-import math
+# import ffmpeg
 import numpy as np
 import os
+from pathlib import Path
 import pickle
 from PIL import Image
 from scipy.spatial.transform import Rotation as R
 from TEHNet import TEHNet
+from tqdm import tqdm
 import torch
 import torch.nn.functional as F
 from torchvision import transforms
 from utils.dataset import BasicDataset
 
+# relative directories
+dir_events = os.path.join('data', 'test', 'events')
+dir_output = 'output'
+
 # LNES window length
 l_lnes = 200
 res = (240, 180)
 
-
-# loads mano parameters
-def load_mano(mano_file):
-    with open(mano_file, 'rb') as f:
-        seq_dict = pickle.load(f)
-        entries = np.zeros((len(seq_dict), 102))
-
-        for e in range(len(seq_dict)):
-            frame = seq_dict[e]
-
-            for h, hand in enumerate(frame):
-                entries[e, h * 51 + 0:h * 51 + 48] = hand['pose']
-                entries[e, h * 51 + 48:h * 51 + 51] = hand['trans']
-
-    return entries
+# framerates
+fps_in = 1000
+fps_out = 30
 
 
-# loads events
-def load_events(events_file):
-    with open(events_file) as f:
-        content = f.readlines()
+# load all events
+def load_events(name_sequence):
+    # load events
+    files_events = sorted([name for name in os.listdir(os.path.join(dir_events, name_sequence))
+                           if os.path.isfile(os.path.join(dir_events, name_sequence, name))
+                           and name.endswith('.pkl')])
 
-    events_raw = []
+    frames_events_total = []
 
-    for line in content:
-        event = line.split()
-        time = int(event[0]) / 1000000
-        x = int(event[1])
-        y = int(event[2])
-        polarity = int(event[3])
+    for events_file in files_events:
+        path_events = os.path.join(dir_events, name_sequence, events_file)
 
-        events_raw.append((time, x, y, polarity))
+        with open(path_events, 'rb') as file:
+            frames_events = pickle.load(file)
 
-    events_frames = [[] for i in range(math.ceil(events_raw[-1][0]))]
+        frames_events_total.extend(frames_events)
 
-    for event in events_raw:
-        events_frames[math.floor(event[0])].append(event)
-
-    events = []
-
-    for t, frame in enumerate(events_frames):
-        events.append(np.zeros((len(frame), 4)))
-
-        for e, event in enumerate(frame):
-            events[t][e, :] = np.array(events_frames[t][e])
-
-    return events
+    return frames_events_total
 
 
 # predict segmentation mask and MANO parameters
-def predict_mask(net, lnes, device):
+def predict(net, lnes, device, use_unet=True):
     net.eval()
 
     lnes = torch.from_numpy(lnes)
@@ -74,38 +55,25 @@ def predict_mask(net, lnes, device):
     lnes = lnes.to(device=device, dtype=torch.float32)
 
     with torch.no_grad():
-        mask_output, _ = net(lnes)
+        if use_unet:
+            mask_output, mano_output = net(lnes)
+        else:
+            mano_output = net(lnes)
 
-        probs = F.softmax(mask_output, dim=1)
-        probs = probs.squeeze(0)
+        if use_unet:
+            probs = F.softmax(mask_output, dim=1)
+            probs = probs.squeeze(0)
 
-        tf = transforms.Compose(
-            [
-                transforms.ToPILImage(),
-                transforms.Resize(lnes.shape[2]),
-                transforms.ToTensor()
-            ]
-        )
+            tf = transforms.Compose(
+                [
+                    transforms.ToPILImage(),
+                    transforms.Resize(lnes.shape[2]),
+                    transforms.ToTensor()
+                ]
+            )
 
-        probs = tf(probs.cpu())
-        full_mask = probs.squeeze().cpu().numpy()
-
-    indices_max = np.argmax(full_mask, axis=0)
-    prediction = (np.arange(3) == indices_max[..., None]).astype(int)
-
-    return prediction
-
-
-# predict MANO parameters
-def predict_mano(net, lnes, device):
-    net.eval()
-
-    lnes = torch.from_numpy(lnes)
-    lnes = lnes.unsqueeze(0)
-    lnes = lnes.to(device=device, dtype=torch.float32)
-
-    with torch.no_grad():
-        _, mano_output = net(lnes)
+            probs = tf(probs.cpu())
+            full_mask = probs.squeeze().cpu().numpy()
 
         params = mano_output.squeeze(0)
         params = params.cpu().numpy()
@@ -119,147 +87,94 @@ def predict_mano(net, lnes, device):
 
     params = params_axisangle
 
-    return params
+    if use_unet:
+        indices_max = np.argmax(full_mask, axis=0)
+        prediction = (np.arange(3) == indices_max[..., None]).astype(int)
 
-
-# predict segmentation mask and MANO parameters
-def predict(net, lnes, device):
-    net.eval()
-
-    lnes = torch.from_numpy(lnes)
-    lnes = lnes.unsqueeze(0)
-    lnes = lnes.to(device=device, dtype=torch.float32)
-
-    with torch.no_grad():
-        mask_output, mano_output = net(lnes)
-
-        probs = F.softmax(mask_output, dim=1)
-        probs = probs.squeeze(0)
-
-        tf = transforms.Compose(
-            [
-                transforms.ToPILImage(),
-                transforms.Resize(lnes.shape[2]),
-                transforms.ToTensor()
-            ]
-        )
-
-        probs = tf(probs.cpu())
-        full_mask = probs.squeeze().cpu().numpy()
-
-        params = mano_output.squeeze(0)
-        params = params.cpu().numpy()
-
-    params_axisangle = np.zeros(102)
-
-    for h in range(2):
-        params_axisangle[h * 51 + 0:h * 51 + 48] = R.from_quat(params[h * 67 + 0:h * 67 + 64].reshape(16, 4))\
-            .as_rotvec().reshape(1, 48)
-        params_axisangle[h * 51 + 48:h * 51 + 51] = params[h * 67 + 64:h * 67 + 67]
-
-    params = params_axisangle
-
-    indices_max = np.argmax(full_mask, axis=0)
-    prediction = (np.arange(3) == indices_max[..., None]).astype(int)
-
-    return prediction, params
+        return prediction, params
+    else:
+        return params
 
 
 # parse arguments
 def get_args():
     parser = argparse.ArgumentParser(description='Predict mask from input images',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('--model', '-m', default='MODEL.pth',
+    parser.add_argument('--model', '-m', default='best.pth',
                         metavar='FILE',
                         help="Specify the file in which the model is stored")
-    parser.add_argument('--input', '-i', metavar='INPUT', nargs='+',
-                        help='filenames of input images', required=True)
-    parser.add_argument('--frame', '-f', metavar='INPUT', nargs='+',
-                        help='frame in the sequence', required=True)
-
-    parser.add_argument('--output', '-o', metavar='INPUT', nargs='+',
-                        help='Filenames of output images')
-    parser.add_argument('--viz', '-v', action='store_true',
-                        help="Visualize the images as they are processed",
-                        default=False)
-    parser.add_argument('--no-save', '-n', action='store_true',
-                        help="Do not save the output mask",
-                        default=False)
+    parser.add_argument('--input', '-i', metavar='INPUT',
+                        help='Name of input sequence', required=True)
+    parser.add_argument('--use_unet', '-u', default=True, type=bool,
+                        help='Use U-Net for mask prediction')
 
     return parser.parse_args()
-
-
-# get name for output file names
-def get_output_filenames(args):
-    in_files = args.input
-    frame = int(args.frame[0])
-    out_files = []
-
-    if not args.output:
-        pathsplit = os.path.splitext(in_files[0])
-        out_files.append("{}_{}_OUT{}".format(pathsplit[0], frame, '.png'))
-        out_files.append("{}_{}_OUT{}".format(pathsplit[0], frame, '.pkl'))
-    elif len(in_files) != len(args.output):
-        logging.error("Input files and output files are not of the same length")
-        raise SystemExit()
-    else:
-        out_files = args.output
-
-    return out_files
-
-
-# PyTorch mask to mask image
-def mask_to_image(mask):
-    mask = mask.transpose((1, 2, 0))
-    return Image.fromarray((mask * 255).astype(np.uint8))
 
 
 # main function
 if __name__ == "__main__":
     args = get_args()
-    in_events = args.input[0]
-    in_mano = args.input[1]
-    frame = int(args.frame[0])
-    out_files = get_output_filenames(args)
+    name_sequence = args.input
+    use_unet = args.use_unet
 
-    net = TEHNet()
+    events = load_events(name_sequence)
 
-    logging.info("Loading model {}".format(args.model))
+    net = TEHNet(use_unet=use_unet)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    logging.info(f'Using device {device}')
+
     net.to(device=device)
-    net.load_state_dict(torch.load(args.model, map_location=device)['model'])
+    net.load_state_dict(torch.load(os.path.join('checkpoints', args.model), map_location=device)['model'])
 
-    logging.info("Model loaded !")
-    logging.info("\nPredicting image {} ...".format(in_events))
+    # dir_masks = os.path.join(dir_output, name_sequence)
+    dir_masks = os.path.join(dir_output, name_sequence, 'masks')
+    Path(dir_masks).mkdir(parents=True, exist_ok=True)
 
-    # events for one LNES window
-    frames = load_events(in_events)[frame - l_lnes + 1:frame + 1]
-    mano_true = load_mano(in_mano)[frame, :]
-    lnes = BasicDataset.preprocess_events(frames, frame - l_lnes + 1, res)
+    # process = (ffmpeg
+    #            .input('pipe:', format='rawvideo', pix_fmt='rgb24', s='{}x{}'.format(res[0], res[1]), framerate=fps_in)
+    #            .output(os.path.join(dir_masks, 'masks.mp4'), pix_fmt='yuv444p', vcodec='libx264', preset='veryslow',
+    #                    crf=0, r=fps_out, movflags='faststart')
+    #            .overwrite_output()
+    #            .run_async(pipe_stdin=True))
 
-    mask_pred, mano_pred = predict(net=net, lnes=lnes, device=device)
+    mano_pred_seq = {}
 
-    # save output
-    if not args.no_save:
-        out_fn = out_files[0]
-        # result = mask_to_image(mask_pred)
-        result = Image.fromarray((mask_pred * 255).astype(np.uint8))
-        result.save(out_files[0])
+    for i_f, f_float in enumerate(tqdm(np.arange(0, len(events), fps_in / fps_out))):
+        f = int(round(f_float))
 
-        logging.info("Mask saved to {}".format(out_files[0]))
+        frames = events[max(0, f - l_lnes + 1):f + 1]
+        lnes = BasicDataset.preprocess_events(frames, f - l_lnes + 1, res)
 
-        seq_dict = {frame: [{'pose': mano_pred[0:48],
-                             'shape': np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-                             'trans': mano_pred[48:51],
-                             'hand_type': 'right'},
-                            {'pose': mano_pred[51:99],
-                             'shape': np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-                             'trans': mano_pred[99:102] + mano_pred[48:51],
-                             'hand_type': 'left'}]}
+        mask_pred = None
 
-        with open(out_files[1], 'wb') as f:
-            pickle.dump(seq_dict, f)
+        if use_unet:
+            mask_pred, mano_pred = predict(net=net, lnes=lnes, device=device, use_unet=use_unet)
+        else:
+            mano_pred = predict(net=net, lnes=lnes, device=device, use_unet=use_unet)
 
-        logging.info("MANO parameters saved to {}".format(out_files[1]))
+        seq_dict = {i_f: [{'pose': mano_pred[0:48],
+                           'shape': np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                           'trans': mano_pred[48:51],
+                           'hand_type': 'right'},
+                          {'pose': mano_pred[51:99],
+                           'shape': np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                           'trans': mano_pred[99:102] + mano_pred[48:51],
+                           'hand_type': 'left'}]}
+
+        mano_pred_seq.update(seq_dict)
+
+        if use_unet:
+            # process.stdin.write((mask_pred * 255).astype(np.uint8).tobytes())
+            out_fn = os.path.join(dir_masks, 'frame_'
+                                  + str(i_f + 1).zfill(len(str(int(round(len(events) * fps_out / fps_in))))) + '.png')
+            result = Image.fromarray((mask_pred * 255).astype(np.uint8))
+            result.save(out_fn)
+
+    # process.stdin.close()
+
+    dir_sequence_mano = os.path.join(dir_output, name_sequence)
+    Path(dir_sequence_mano).mkdir(parents=True, exist_ok=True)
+    out_mano = os.path.join(dir_sequence_mano, 'sequence_mano.pkl')
+
+    with open(out_mano, 'wb') as file:
+        pickle.dump(mano_pred_seq, file)
