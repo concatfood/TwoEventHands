@@ -82,7 +82,7 @@ def predict(net, lnes, device, use_unet=True):
 
     for h in range(2):
         params_axisangle[h * 51 + 0:h * 51 + 48] = R.from_quat(params[h * 67 + 0:h * 67 + 64].reshape(16, 4))\
-            .as_rotvec().reshape(1, 48)
+            .as_rotvec().reshape(48)
         params_axisangle[h * 51 + 48:h * 51 + 51] = params[h * 67 + 64:h * 67 + 67]
 
     params = params_axisangle
@@ -105,7 +105,7 @@ def get_args():
                         help="Specify the file in which the model is stored")
     parser.add_argument('--input', '-i', metavar='INPUT',
                         help='Name of input sequence', required=True)
-    parser.add_argument('--use_unet', '-u', default=True, type=bool,
+    parser.add_argument('--use_unet', '-u', default=False, type=bool,
                         help='Use U-Net for mask prediction')
 
     return parser.parse_args()
@@ -128,7 +128,6 @@ if __name__ == "__main__":
 
     # dir_masks = os.path.join(dir_output, name_sequence)
     dir_masks = os.path.join(dir_output, name_sequence, 'masks')
-    Path(dir_masks).mkdir(parents=True, exist_ok=True)
 
     # process = (ffmpeg
     #            .input('pipe:', format='rawvideo', pix_fmt='rgb24', s='{}x{}'.format(res[0], res[1]), framerate=fps_in)
@@ -158,13 +157,14 @@ if __name__ == "__main__":
                            'hand_type': 'right'},
                           {'pose': mano_pred[51:99],
                            'shape': np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-                           'trans': mano_pred[99:102] + mano_pred[48:51],
+                           'trans': mano_pred[99:102],
                            'hand_type': 'left'}]}
 
         mano_pred_seq.update(seq_dict)
 
         if use_unet:
             # process.stdin.write((mask_pred * 255).astype(np.uint8).tobytes())
+            Path(dir_masks).mkdir(parents=True, exist_ok=True)
             out_fn = os.path.join(dir_masks, 'frame_'
                                   + str(i_f + 1).zfill(len(str(int(round(len(events) * fps_out / fps_in))))) + '.png')
             result = Image.fromarray((mask_pred * 255).astype(np.uint8))

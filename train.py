@@ -21,7 +21,7 @@ dir_mask = os.path.join('data', 'train', 'masks')
 dir_checkpoint = 'checkpoints'
 
 # early stopping
-patience = 100
+patience = 10
 
 # resolution
 res = (240, 180)
@@ -40,7 +40,7 @@ use_unet = False
 # training function
 def train_net(net, device, epochs=1000, batch_size=16, lr=0.0001, val_percent=0.1, save_cp=True, checkpoint=None):
     # setup data loader
-    dataset = BasicDataset(dir_events, dir_mano, dir_mask, res, l_lnes, use_unet=use_unet)
+    dataset = BasicDataset(dir_events, dir_mano, dir_mask, res, l_lnes, net, use_unet=use_unet)
 
     # split such that validation set consists of the midmost parts of all sequences
     list_train_np = [np.array(list(range(0,
@@ -70,7 +70,7 @@ def train_net(net, device, epochs=1000, batch_size=16, lr=0.0001, val_percent=0.
 
     # optimization and scheduling
     optimizer = optim.RMSprop(net.parameters(), lr=lr, weight_decay=1e-8, momentum=0.9)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=50)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5)
 
     if checkpoint is not None:
         optimizer.load_state_dict(checkpoint['optimizer'])

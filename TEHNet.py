@@ -18,10 +18,10 @@ class TEHNet(nn.Module):
             self.unet = UNet()
 
         self.resnet = ResNet(use_unet=use_unet)
-        # self.layer_mano_right = ManoLayer(flat_hand_mean=False, side='right', mano_root='mano', use_pca=False,
-        #                                   root_rot_mode='axisang', joint_rot_mode='axisang')
-        # self.layer_mano_left = ManoLayer(flat_hand_mean=False, side='left', mano_root='mano', use_pca=False,
-        #                                  root_rot_mode='axisang', joint_rot_mode='axisang')
+        self.layer_mano_right = ManoLayer(flat_hand_mean=False, side='right', mano_root='mano', use_pca=False,
+                                          root_rot_mode='axisang', joint_rot_mode='axisang')
+        self.layer_mano_left = ManoLayer(flat_hand_mean=False, side='left', mano_root='mano', use_pca=False,
+                                         root_rot_mode='axisang', joint_rot_mode='axisang')
 
     def load_resnet(self, path, device):
         self.resnet.load_state_dict(

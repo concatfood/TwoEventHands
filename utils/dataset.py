@@ -1,5 +1,4 @@
 import ffmpeg
-import glm
 import logging
 import math
 import numpy as np
@@ -21,23 +20,13 @@ dtype_events = np.dtype([('t', np.int64), ('x', np.int16), ('y', np.int16), ('p'
 interval = 1000
 interval_masks = 10
 
-# average position of hands
-t_hands_avg = {'0': np.array([1.15030333, -0.26061168, 0.78577989]),
-               '1': np.array([1.12174921, -0.20740417, 0.81597976]),
-               '2': np.array([1.16503733, -0.31407652, 0.81827346]),
-               '3': np.array([1.03878048, -0.27550721, 0.82758726]),
-               '4': np.array([1.03542053, -0.1853186, 0.77306902]),
-               '5': np.array([0.98415266, -0.42346881, 0.76287726]),
-               '6': np.array([0.99070947, -0.40857825, 0.75110521]),
-               '7': np.array([1.00070618, -0.40154313, 0.77840039])}
-
 # camera parameters
 far = 1.0
 fov = 45.0
-fovy = glm.radians(fov)
+fovy = np.radians(fov)
 
 # camera position relative to hands in MANO space
-t_cam_rel = np.array([0.5 * far, 0.0, 0.0])
+hands_avg = np.array([0.0, 0.0, -0.5])
 
 angles_augmentation = {'0': 5.0 / 360.0 * (2.0 * math.pi), '1': 10.0 / 360.0 * (2.0 * math.pi),
                        '2': 15.0 / 360.0 * (2.0 * math.pi), '3': 20.0 / 360.0 * (2.0 * math.pi),
@@ -48,12 +37,13 @@ angles_position = {'0': None, '1': 45.0 / 360.0 * (2 * math.pi), '2': 135.0 / 36
 
 # dataset loader
 class BasicDataset(Dataset):
-    def __init__(self, events_dir, mano_dir, masks_dir, res, l_lnes, use_unet=True):
+    def __init__(self, events_dir, mano_dir, masks_dir, res, l_lnes, net, use_unet=True):
         self.events_dir = events_dir
         self.mano_dir = mano_dir
         self.masks_dir = masks_dir
         self.res = res
         self.l_lnes = l_lnes
+        self.net = net
         self.num_frames = []
         self.use_unet = use_unet
 
@@ -90,40 +80,31 @@ class BasicDataset(Dataset):
 
         self.len_until_reverse = self.len_until[::-1]
 
+        # assume constant roots because of constant shapes
+        pose_zero = torch.zeros((1, 48)).cuda()
+        shape_zero = torch.zeros((1, 10)).cuda()
+        trans_zero = torch.zeros((1, 3)).cuda()
+
+        _, joints_right = self.net.layer_mano_right(pose_zero, th_betas=shape_zero, th_trans=trans_zero)
+        _, joints_left = self.net.layer_mano_left(pose_zero, th_betas=shape_zero, th_trans=trans_zero)
+        self.roots = [joints_right[0, 0, ...].cpu().numpy(), joints_left[0, 0, ...].cpu().numpy()]
+
         logging.info(f'The dataset contains {len(self.ids)} frames.')
 
     # length equals to number of sequences time number of (frames - LNES window length)
     def __len__(self):
         return len(self.ids)
 
-    # compute intrinsic and extrinsic matrices
+    # compute intrinsic matrix
     @classmethod
-    def compute_camera_matrices(cls, name, aa, ap, res):
+    def compute_camera_matrix(cls, res):
         f = 0.5 * res[1] / math.tan(fovy / 2.0)
 
-        mat_intrinsic = np.array([[f, 0.0, -res[0] / 2.0],  # y and z negative because of different coordinate systems
-                                  [0.0, -f, -res[1] / 2.0],
-                                  [0.0, 0.0, -1.0]])
+        mat_cam = np.array([[f, 0.0, -res[0] / 2.0],  # y and z negative because of different coordinate systems
+                            [0.0, -f, -res[1] / 2.0],
+                            [0.0, 0.0, -1.0]])
 
-        camera_relative = glm.vec3(0.5 * far, 0.0, 0.0)
-        forward = glm.vec3(-1.0, 0.0, 0.0)
-        up = glm.vec3(0.0, 0.0, 1.0)
-
-        if angles_position[ap] is not None:
-            camera_relative_transformed = glm.rotateZ(camera_relative, angles_augmentation[aa])
-            forward_transformed = glm.rotateZ(forward, angles_augmentation[aa])
-            camera_relative = glm.rotateX(camera_relative_transformed, angles_position[ap])
-            forward = glm.rotateX(forward_transformed, angles_position[ap])
-            line_target_2d = np.array([forward.y, -forward.x])
-            line_target_2d /= np.linalg.norm(line_target_2d)
-            right_horizontal = glm.vec3(line_target_2d[0], line_target_2d[1], 0.0)
-            up = glm.cross(-forward_transformed, right_horizontal)  # actually -forward, but mistake in renderer
-
-        mat_extrinsic = np.array(glm.lookAt(glm.vec3(t_hands_avg[name]) + camera_relative,
-                                            glm.vec3(t_hands_avg[name]) + camera_relative + forward,
-                                            up))
-
-        return mat_intrinsic, mat_extrinsic
+        return mat_cam
 
     # convert events to LNES frames
     @classmethod
@@ -152,36 +133,52 @@ class BasicDataset(Dataset):
 
     # compute left hand parameters in right hand frame and right hand parameters in camera frame
     @classmethod
-    def preprocess_mano(cls, params_mano, name, aa, ap):
-        angle_aa, angle_ap = angles_augmentation[aa], angles_position[ap]
+    def preprocess_mano(cls, params_mano, aa, ap, roots):
+        angle_augmentation, angle_position = angles_augmentation[aa], angles_position[ap]
 
-        rot_aug_inv = np.eye(3)
+        camera_relative = np.array([0.0, 0.0, 0.0])
+        forward = np.array([0.0, 0.0, -1.0])
 
-        if angle_ap is not None:
-            rot_aa = np.array([[math.cos(angle_aa), -math.sin(angle_aa), 0.0],
-                               [math.sin(angle_aa), math.cos(angle_aa), 0.0],
+        view_matrix = np.eye(4)
+
+        if angle_position is not None:
+            rot_aa = np.array([[math.cos(angle_augmentation), 0.0, math.sin(angle_augmentation)],
+                               [0.0, 1.0, 0.0],
+                               [-math.sin(angle_augmentation), 0.0, math.cos(angle_augmentation)]])
+            rot_ap = np.array([[math.cos(angle_position), -math.sin(angle_position), 0.0],
+                               [math.sin(angle_position), math.cos(angle_position), 0.0],
                                [0.0, 0.0, 1.0]])
-            rot_ap = np.array([[1.0, 0.0, 0.0],
-                               [0.0, math.cos(angle_ap), -math.sin(angle_ap)],
-                               [0.0, math.sin(angle_ap), math.cos(angle_ap)]])
-            rot_aug = rot_ap.dot(rot_aa)
-            rot_aug_inv = rot_aug.transpose()
 
-        t_cam = t_hands_avg[name] + t_cam_rel
+            camera_relative_transformed = rot_aa.dot(camera_relative - hands_avg) + hands_avg
+            forward_transformed = rot_aa.dot(forward)
+            camera_relative = rot_ap.dot(camera_relative_transformed)
+            forward = rot_ap.dot(forward_transformed)
+            line_target_2d = np.array([-forward[2], forward[0]])
+            line_target_2d /= np.linalg.norm(line_target_2d)
+            right_horizontal = np.array([line_target_2d[0], 0.0, line_target_2d[1]])
+            up = np.cross(-forward, right_horizontal)
+
+            view_matrix = np.zeros((4, 4))
+            view_matrix[0, :3] = np.array(right_horizontal)
+            view_matrix[1, :3] = np.array(up)
+            view_matrix[2, :3] = np.array(-forward)
+            view_matrix[:3, 3] = -view_matrix[:3, :3].dot(hands_avg + camera_relative)
+            view_matrix[3, 3] = 1.0
+
+        rot_vm = view_matrix[:3, :3]
 
         params_new = np.zeros(134)
 
         for h, hand in enumerate(params_mano):
             # global MANO rotation in MANO camera frame
-            params_new[h * 67 + 0:h * 67 + 4] = (R.from_matrix(rot_aug_inv) * R.from_rotvec(hand['pose'][:3])).as_quat()
-            params_new[h * 67 + 4:h * 67 + 64] = R.from_rotvec(hand['pose'][3:48].reshape(15, 3)).as_quat()\
-                .reshape(1, 60)
-            params_new[h * 67 + 64:h * 67 + 67] = rot_aug_inv.dot(hand['trans'] - t_hands_avg[name]) + t_hands_avg[name]
+            rot_mano = hand['pose'][:3]
+            trans_mano = hand['trans']
+            trans_manocam = trans_mano - camera_relative
 
-        # left hand position relative to right hand position
-        # right hand position relative to camera position
-        params_new[1 * 67 + 64:1 * 67 + 67] -= params_new[0 * 67 + 64:0 * 67 + 67]
-        params_new[0 * 67 + 64:0 * 67 + 67] -= t_cam
+            params_new[h * 67 + 0:h * 67 + 4] = (R.from_matrix(rot_vm) * R.from_rotvec(rot_mano)).as_quat()
+            params_new[h * 67 + 4:h * 67 + 64] = R.from_rotvec(hand['pose'][3:48].reshape(15, 3)).as_quat()\
+                .reshape(60)
+            params_new[h * 67 + 64:h * 67 + 67] = -roots[h] + rot_vm.dot(roots[h] + trans_manocam)
 
         return params_new
 
@@ -244,7 +241,7 @@ class BasicDataset(Dataset):
         with open(file_mano, 'rb') as file:
             frame_mano = pickle.load(file)[f]
 
-        mano_params = self.preprocess_mano(frame_mano, name, aa, ap)
+        mano_params = self.preprocess_mano(frame_mano, aa, ap, self.roots)
 
         mask = None
 
