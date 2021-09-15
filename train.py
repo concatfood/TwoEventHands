@@ -1,8 +1,6 @@
 import argparse
 from eval import eval_net
 import logging
-import math
-import numpy as np
 import os
 from shutil import copyfile
 import torch
@@ -14,14 +12,14 @@ from torch.utils.tensorboard import SummaryWriter
 from utils.dataset import BasicDataset
 from TEHNet import TEHNet
 
+
 # relative directories
 dir_events = os.path.join('data', 'train', 'events')
 dir_mano = os.path.join('data', 'train', 'mano')
-dir_mask = os.path.join('data', 'train', 'masks')
 dir_checkpoint = 'checkpoints'
 
 # early stopping
-patience = 10
+patience = 20
 
 # resolution
 res = (240, 180)
@@ -31,54 +29,44 @@ l_lnes = 200
 
 # weights
 weight_mano = 1.0
-weight_mask = 0.1
-
-# use UNet for masks
-use_unet = False
+weight_3d = 0.0
+weight_2d = 0.0
 
 
 # training function
-def train_net(net, device, epochs=1000, batch_size=16, lr=0.0001, val_percent=0.1, save_cp=True, checkpoint=None):
+def train_net(net, device, epochs=1000, batch_size=64, lr=0.0001, save_cp=True, checkpoint=None):
     # setup data loader
-    dataset = BasicDataset(dir_events, dir_mano, dir_mask, res, l_lnes, net, use_unet=use_unet)
+    dataset = BasicDataset(dir_events, dir_mano, res, l_lnes)
 
-    # split such that validation set consists of the midmost parts of all sequences
-    list_train_np = [np.array(list(range(0,
-                                         int(round(num_frames / 2 * (1 - val_percent))))) +
-                              list(range(int(round(num_frames / 2 * (1 + val_percent))),
-                                         num_frames)))
-                     for num_frames in dataset.num_frames]
+    # split such that one sequences with all camera angles is both the test and validation dataset
+    sequences_all = 8 * 21
+    sequences_val_start = 6 * 21
+    sequences_val_end = 7 * 21
+    sequences_train = [s for s in list(range(sequences_all)) if not sequences_val_start <= s < sequences_val_end]
+    sequences_val = list(range(sequences_val_start, sequences_val_end))
+    list_train = [list(range(dataset.len_until[s], dataset.len_until[s + 1])) if s < sequences_all - 1
+                  else list(range(dataset.len_until[s], len(dataset))) for s in sequences_train]
+    list_val = [list(range(dataset.len_until[s], dataset.len_until[s + 1])) if s < sequences_all - 1
+                else list(range(dataset.len_until[s], len(dataset))) for s in sequences_val]
 
-    list_val_np = [np.array(list(range(int(round(num_frames / 2 * (1 - val_percent))),
-                                       int(round(num_frames / 2 * (1 + val_percent))))))
-                   for num_frames in dataset.num_frames]
-
-    for s in range(1, len(list_train_np)):
-        list_train_np[s] += dataset.len_until[s]
-
-    list_train = np.concatenate(list_train_np).tolist()
-
-    for s in range(1, len(list_val_np)):
-        list_val_np[s] += dataset.len_until[s]
-
-    list_val = np.concatenate(list_val_np).tolist()
+    list_train = [item for sublist in list_train for item in sublist]
+    list_val = [item for sublist in list_val for item in sublist]
 
     train = torch.utils.data.Subset(dataset, list_train)
     val = torch.utils.data.Subset(dataset, list_val)
     train_loader = DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
-    val_loader = DataLoader(val, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
+    val_loader = DataLoader(val, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
 
     # optimization and scheduling
     optimizer = optim.RMSprop(net.parameters(), lr=lr, weight_decay=1e-8, momentum=0.9)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=10)
 
     if checkpoint is not None:
         optimizer.load_state_dict(checkpoint['optimizer'])
         scheduler.load_state_dict(checkpoint['scheduler'])
 
     # losses
-    criterion_mask = nn.CrossEntropyLoss()
-    criterion_mano = nn.MSELoss()
+    mseloss = nn.MSELoss()
 
     # early stopping values
     epoch_best = -1 if checkpoint is None else checkpoint['epoch_best']
@@ -110,7 +98,8 @@ def train_net(net, device, epochs=1000, batch_size=16, lr=0.0001, val_percent=0.
     # dataset loop
     for epoch in range(epoch_start, epochs):
         loss_train_mano = 0
-        loss_train_mask = 0
+        loss_train_3d = 0
+        loss_train_2d = 0
         loss_train = 0
 
         net.train()
@@ -122,38 +111,29 @@ def train_net(net, device, epochs=1000, batch_size=16, lr=0.0001, val_percent=0.
                 break
 
             # log phase, epoch and iteration
-            with open('phase_epoch_iteration.txt', "w") as f:
+            with open('phase_epoch_iteration.txt', 'w') as f:
                 f.write('training, ' + str(epoch) + ', ' + str(it))
 
             # load data
-            if use_unet:
-                lnes, true_masks, true_mano = batch['lnes'], batch['mask'], batch['mano']
-            else:
-                lnes, true_mano = batch['lnes'], batch['mano']
+            lnes = batch['lnes']
+            true_mano, true_joints_3d, true_joints_2d = batch['mano'], batch['joints_3d'], batch['joints_2d']
 
             # send to device
             lnes = lnes.to(device=device, dtype=torch.float32)
-
-            if use_unet:
-                true_masks = true_masks.to(device=device, dtype=torch.long)
-
             true_mano = true_mano.to(device=device, dtype=torch.float32)
+            true_joints_3d = true_joints_3d.to(device=device, dtype=torch.float32)
+            true_joints_2d = true_joints_2d.to(device=device, dtype=torch.float32)
 
             # forward and loss computation
-            if use_unet:
-                masks_pred, mano_pred = net(lnes)
-            else:
-                mano_pred = net(lnes)
+            mano_pred, joints_3d_pred, joints_2d_pred = net(lnes)
 
-            loss_mano = criterion_mano(mano_pred, true_mano)
+            loss_mano = weight_mano * mseloss(mano_pred, true_mano)
+            loss_3d = weight_3d * mseloss(joints_3d_pred, true_joints_3d)
+            loss_2d = weight_2d * mseloss(joints_2d_pred, true_joints_2d)
             loss_train_mano += loss_mano.item()
-
-            if use_unet:
-                loss_mask = criterion_mask(masks_pred, true_masks)
-                loss_train_mask += loss_mask.item()
-                loss_total = weight_mask * loss_mask + weight_mano * loss_mano
-            else:
-                loss_total = weight_mano * loss_mano
+            loss_train_3d += loss_3d.item()
+            loss_train_2d += loss_2d.item()
+            loss_total = loss_mano + loss_3d + loss_2d
 
             loss_train += loss_total.item()
 
@@ -168,28 +148,28 @@ def train_net(net, device, epochs=1000, batch_size=16, lr=0.0001, val_percent=0.
 
         loss_train /= iters_train
         loss_train_mano /= iters_train
-        loss_train_mask /= iters_train
+        loss_train_3d /= iters_train
+        loss_train_2d /= iters_train
 
         # validation phase
         net.eval()
-        loss_valid, loss_valid_mano, loss_valid_mask = eval_net(net, val_loader, device, epoch, iters_val, use_unet)
+        loss_valid, loss_valid_mano, loss_valid_3d, loss_valid_2d = eval_net(net, val_loader, device, epoch, iters_val)
         loss_valid /= iters_val
         loss_valid_mano /= iters_val
-        loss_valid_mask /= iters_val
+        loss_valid_3d /= iters_val
+        loss_valid_2d /= iters_val
         scheduler.step(loss_valid)
 
         # log to TensorBoard
         writer.add_scalar('train loss total', loss_train, epoch)
         writer.add_scalar('train loss mano', loss_train_mano, epoch)
-
-        if use_unet:
-            writer.add_scalar('train loss mask', loss_train_mask, epoch)
+        writer.add_scalar('train loss 3d', loss_train_3d, epoch)
+        writer.add_scalar('train loss 2d', loss_train_2d, epoch)
 
         writer.add_scalar('valid loss total', loss_valid, epoch)
         writer.add_scalar('valid loss mano', loss_valid_mano, epoch)
-
-        if use_unet:
-            writer.add_scalar('valid loss mask', loss_valid_mask, epoch)
+        writer.add_scalar('valid loss 3d', loss_valid_3d, epoch)
+        writer.add_scalar('valid loss 2d', loss_valid_2d, epoch)
 
         writer.add_scalar('learning rate', optimizer.param_groups[0]['lr'], epoch)
 
@@ -235,18 +215,16 @@ def train_net(net, device, epochs=1000, batch_size=16, lr=0.0001, val_percent=0.
 
 # parse arguments
 def get_args():
-    parser = argparse.ArgumentParser(description='Train the UNet on LNES and target masks',
+    parser = argparse.ArgumentParser(description='Train the UNet on LNES',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('-e', '--epochs', metavar='E', type=int, default=1000,
                         help='Number of epochs', dest='epochs')
-    parser.add_argument('-b', '--batch-size', metavar='B', type=int, nargs='?', default=16,
+    parser.add_argument('-b', '--batch-size', metavar='B', type=int, nargs='?', default=64,
                         help='Batch size', dest='batchsize')
     parser.add_argument('-l', '--learning-rate', metavar='LR', type=float, nargs='?', default=0.0001,
                         help='Learning rate', dest='lr')
     parser.add_argument('-f', '--load', dest='load', type=str, default=False,
                         help='Load model from a .pth file')
-    parser.add_argument('-v', '--validation', dest='val', type=float, default=10.0,
-                        help='Percent of the data that is used as validation (0-100)')
 
     return parser.parse_args()
 
@@ -258,11 +236,11 @@ if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f'Using device {device}')
 
-    net = TEHNet(use_unet=use_unet)
+    net = TEHNet()
     checkpoint = None
 
     if args.load:
-        checkpoint = torch.load(args.load, map_location=device)
+        checkpoint = torch.load(os.path.join(dir_checkpoint, args.model), map_location=device)
 
         net.load_state_dict(checkpoint['model'])
         logging.info(f'Checkpoint loaded from {args.load}')
@@ -270,5 +248,4 @@ if __name__ == '__main__':
     net.to(device=device)
     # net = nn.DataParallel(net)
 
-    train_net(net=net, device=device, epochs=args.epochs, batch_size=args.batchsize, lr=args.lr,
-              val_percent=args.val / 100, checkpoint=checkpoint)
+    train_net(net=net, device=device, epochs=args.epochs, batch_size=args.batchsize, lr=args.lr, checkpoint=checkpoint)

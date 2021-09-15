@@ -1,81 +1,58 @@
-import logging
+from manopth.manolayer import ManoLayer
+import math
+import numpy as np
+from pytorch3d.transforms import quaternion_to_axis_angle
+from resnet50 import ResNet
 import torch
 import torch.nn as nn
 
-from manopth.manolayer import ManoLayer
-from pytorch3d.transforms import quaternion_to_axis_angle
-from resnet50 import ResNet
-from unet import UNet
+
+# camera parameters
+res = (240, 180)
+far = 1.0
+fov = 45.0
+fovy = np.radians(fov)
+focal = 0.5 * res[1] / math.tan(fovy / 2.0)
+mat_cam = torch.from_numpy(np.array([[focal, 0.0, -res[0] / 2.0],
+                                     [0.0, -focal, -res[1] / 2.0],
+                                     [0.0, 0.0, -1.0]])).float().cuda()
 
 
 # TwoEventHandsNet = UNet + ResNet50 + ManoLayer
 class TEHNet(nn.Module):
-    def __init__(self, use_unet=True):
+    def __init__(self):
         super(TEHNet, self).__init__()
-        self.use_unet = use_unet
 
-        if use_unet:
-            self.unet = UNet()
-
-        self.resnet = ResNet(use_unet=use_unet)
-        self.layer_mano_right = ManoLayer(flat_hand_mean=False, side='right', mano_root='mano', use_pca=False,
+        self.resnet = ResNet()
+        self.layer_mano_right = ManoLayer(flat_hand_mean=True, side='right', mano_root='mano', use_pca=False,
                                           root_rot_mode='axisang', joint_rot_mode='axisang')
-        self.layer_mano_left = ManoLayer(flat_hand_mean=False, side='left', mano_root='mano', use_pca=False,
+        self.layer_mano_left = ManoLayer(flat_hand_mean=True, side='left', mano_root='mano', use_pca=False,
                                          root_rot_mode='axisang', joint_rot_mode='axisang')
 
-    def load_resnet(self, path, device):
-        self.resnet.load_state_dict(
-            torch.load(path, map_location=device)
-        )
-        logging.info(f'ResNet model loaded from {path}')
-
-        # fix weights if desired
-        # for param in self.resnet.parameters():
-        #     param.requires_grad = False
-
-    def load_unet(self, path, device):
-        self.unet.load_state_dict(
-            torch.load(path, map_location=device)
-        )
-        logging.info(f'UNet model loaded from {path}')
-
-        # fix weights if desired
-        # for param in self.unet.parameters():
-        #     param.requires_grad = False
-
     def forward(self, x):
-        mask = None
+        mano_params = self.resnet(x)
 
-        if self.use_unet:
-            mask = self.unet(x)
+        # quaternion to axis-angle
+        mano_rots_quat_right = mano_params[:, 0:64].reshape(-1, 16, 4)
+        mano_rots_quat_left = mano_params[:, 67:131].reshape(-1, 16, 4)
+        mano_trans_right = mano_params[:, 64:67]
+        mano_trans_left = mano_params[:, 131:134]
+        mano_rots_axisangle_right = quaternion_to_axis_angle(mano_rots_quat_right).reshape(-1, 48)
+        mano_rots_axisangle_left = quaternion_to_axis_angle(mano_rots_quat_left).reshape(-1, 48)
+        mano_params_manolayer = torch.cat([mano_rots_axisangle_right, mano_trans_right,
+                                           mano_rots_axisangle_left, mano_trans_left], dim=1)
 
-            # LNES and mask
-            x_masked = torch.cat([x, mask], dim=1)
+        vertices_right, joints_right = self.layer_mano_right(mano_params_manolayer[:, :48],
+                                                             th_betas=torch.zeros((mano_params_manolayer.shape[0], 10))
+                                                             .cuda(),
+                                                             th_trans=mano_params_manolayer[:, 48:51])
+        vertices_left, joints_left = self.layer_mano_left(mano_params_manolayer[:, 51:99],
+                                                          th_betas=torch.zeros((mano_params_manolayer.shape[0], 10))
+                                                          .cuda(),
+                                                          th_trans=mano_params_manolayer[:, 99:102])
 
-            mano_params_resnet = self.resnet(x_masked)
-        else:
-            mano_params_resnet = self.resnet(x)
+        joints_3d = torch.cat((joints_right, joints_left), 1)
+        joints_intrinsic = torch.matmul(joints_3d, torch.transpose(mat_cam, 0, 1))
+        joints_2d = joints_intrinsic[..., 0:2] / joints_intrinsic[..., [2]]
 
-        # # quaternion to axis-angle
-        # mano_rots_quat_right = mano_params_resnet[:, 0:64].reshape(-1, 16, 4)
-        # mano_rots_quat_left = mano_params_resnet[:, 67:131].reshape(-1, 16, 4)
-        # mano_trans_right = mano_params_resnet[:, 64:67]
-        # mano_trans_left = mano_params_resnet[:, 131:134]
-        # mano_rots_axisangle_right = quaternion_to_axis_angle(mano_rots_quat_right).reshape(-1, 48)
-        # mano_rots_axisangle_left = quaternion_to_axis_angle(mano_rots_quat_left).reshape(-1, 48)
-        # mano_params_manolayer = torch.cat([mano_rots_axisangle_right, mano_trans_right,
-        #                                    mano_rots_axisangle_left, mano_trans_left], dim=1)
-        #
-        # vertices_right, joints_right = self.layer_mano_right(mano_params_manolayer[:, :48],
-        #                                                      th_betas=torch.zeros((mano_params_manolayer.shape[0], 10))
-        #                                                      .cuda(),
-        #                                                      th_trans=mano_params_manolayer[:, 48:51])
-        # vertices_left, joints_left = self.layer_mano_left(mano_params_manolayer[:, 51:99],
-        #                                                   th_betas=torch.zeros((mano_params_manolayer.shape[0], 10))
-        #                                                   .cuda(),
-        #                                                   th_trans=mano_params_manolayer[:, 99:102])
-
-        if self.use_unet:
-            return mask, mano_params_resnet
-        else:
-            return mano_params_resnet
+        return mano_params, joints_3d, joints_2d

@@ -5,16 +5,15 @@ from tqdm import tqdm
 
 # weights
 weight_mano = 1.0
-weight_mask = 0.1
+weight_3d = 0.0
+weight_2d = 0.0
 
 
 # evaluate network
-def eval_net(net, loader, device, epoch, num_it=-1, use_unet=True):
-    mask_type = torch.long
-    mano_type = torch.float32
-
+def eval_net(net, loader, device, epoch, num_it=-1):
     loss_valid_mano = 0
-    loss_valid_mask = 0
+    loss_valid_3d = 0
+    loss_valid_2d = 0
     loss_valid = 0
     global_step = 0
 
@@ -23,33 +22,23 @@ def eval_net(net, loader, device, epoch, num_it=-1, use_unet=True):
         if it >= num_it:
             break
 
-        if use_unet:
-            lnes, true_masks, true_mano = batch['lnes'], batch['mask'], batch['mano']
-        else:
-            lnes, true_mano = batch['lnes'], batch['mano']
-
+        lnes = batch['lnes']
+        true_mano, true_joints_3d, true_joints_2d = batch['mano'], batch['joints_3d'], batch['joints_2d']
         lnes = lnes.to(device=device, dtype=torch.float32)
-
-        if use_unet:
-            true_masks = true_masks.to(device=device, dtype=mask_type)
-
-        true_mano = true_mano.to(device=device, dtype=mano_type)
+        true_mano = true_mano.to(device=device, dtype=torch.float32)
+        true_joints_3d = true_joints_3d.to(device=device, dtype=torch.float32)
+        true_joints_2d = true_joints_2d.to(device=device, dtype=torch.float32)
 
         with torch.no_grad():
-            if use_unet:
-                mask_pred, mano_pred = net(lnes)
-            else:
-                mano_pred = net(lnes)
+            mano_pred, joints_3d_pred, joints_2d_pred = net(lnes)
 
-        loss_mano = F.mse_loss(mano_pred, true_mano)
+        loss_mano = weight_mano * F.mse_loss(mano_pred, true_mano)
+        loss_3d = weight_3d * F.mse_loss(joints_3d_pred, true_joints_3d)
+        loss_2d = weight_2d * F.mse_loss(joints_2d_pred, true_joints_2d)
         loss_valid_mano += loss_mano.item()
-
-        if use_unet:
-            loss_mask = F.cross_entropy(mask_pred, true_masks)
-            loss_valid_mask += loss_mask.item()
-            loss_total = weight_mano * loss_mano + weight_mask * loss_mask
-        else:
-            loss_total = weight_mano * loss_mano
+        loss_valid_3d += loss_3d.item()
+        loss_valid_2d += loss_2d.item()
+        loss_total = loss_mano + loss_3d + loss_2d
 
         loss_valid += loss_total.item()
 
@@ -61,4 +50,4 @@ def eval_net(net, loader, device, epoch, num_it=-1, use_unet=True):
 
         # pbar.update()
 
-    return loss_valid, loss_valid_mano, loss_valid_mask
+    return loss_valid, loss_valid_mano, loss_valid_3d, loss_valid_2d

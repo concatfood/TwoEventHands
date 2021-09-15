@@ -1,5 +1,6 @@
 import ffmpeg
 import logging
+from manopth.manolayer import ManoLayer
 import math
 import numpy as np
 import os
@@ -9,6 +10,7 @@ import pickle
 from scipy.spatial.transform import Rotation as R
 import torch
 from torch.utils.data import Dataset
+
 
 # name of dataset
 prefix_dataset = 'raw_sequence'
@@ -21,9 +23,14 @@ interval = 1000
 interval_masks = 10
 
 # camera parameters
+res = (240, 180)
 far = 1.0
 fov = 45.0
 fovy = np.radians(fov)
+focal = 0.5 * res[1] / math.tan(fovy / 2.0)
+mat_cam = np.array([[focal, 0.0, -res[0] / 2.0],    # y and z negative because of different coordinate systems
+                    [0.0, -focal, -res[1] / 2.0],
+                    [0.0, 0.0, -1.0]])
 
 # camera position relative to hands in MANO space
 hands_avg = np.array([0.0, 0.0, -0.5])
@@ -37,15 +44,12 @@ angles_position = {'0': None, '1': 45.0 / 360.0 * (2 * math.pi), '2': 135.0 / 36
 
 # dataset loader
 class BasicDataset(Dataset):
-    def __init__(self, events_dir, mano_dir, masks_dir, res, l_lnes, net, use_unet=True):
+    def __init__(self, events_dir, mano_dir, res, l_lnes):
         self.events_dir = events_dir
         self.mano_dir = mano_dir
-        self.masks_dir = masks_dir
         self.res = res
         self.l_lnes = l_lnes
-        self.net = net
         self.num_frames = []
-        self.use_unet = use_unet
 
         self.events_dirs = sorted([directory for directory in os.listdir(self.events_dir)
                                    if os.path.isdir(os.path.join(self.events_dir, directory))])
@@ -80,14 +84,19 @@ class BasicDataset(Dataset):
 
         self.len_until_reverse = self.len_until[::-1]
 
-        # assume constant roots because of constant shapes
-        pose_zero = torch.zeros((1, 48)).cuda()
-        shape_zero = torch.zeros((1, 10)).cuda()
-        trans_zero = torch.zeros((1, 3)).cuda()
+        self.layer_mano_right = ManoLayer(flat_hand_mean=True, side='right', mano_root='mano', use_pca=False,
+                                          root_rot_mode='axisang', joint_rot_mode='axisang')
+        self.layer_mano_left = ManoLayer(flat_hand_mean=True, side='left', mano_root='mano', use_pca=False,
+                                         root_rot_mode='axisang', joint_rot_mode='axisang')
 
-        _, joints_right = self.net.layer_mano_right(pose_zero, th_betas=shape_zero, th_trans=trans_zero)
-        _, joints_left = self.net.layer_mano_left(pose_zero, th_betas=shape_zero, th_trans=trans_zero)
-        self.roots = [joints_right[0, 0, ...].cpu().numpy(), joints_left[0, 0, ...].cpu().numpy()]
+        # assume constant roots because of constant shapes
+        pose_zero = torch.zeros((1, 48))
+        shape_zero = torch.zeros((1, 10))
+        trans_zero = torch.zeros((1, 3))
+
+        _, joints_right = self.layer_mano_right(pose_zero, th_betas=shape_zero, th_trans=trans_zero)
+        _, joints_left = self.layer_mano_left(pose_zero, th_betas=shape_zero, th_trans=trans_zero)
+        self.roots = [joints_right[0, 0, ...].numpy(), joints_left[0, 0, ...].numpy()]
 
         logging.info(f'The dataset contains {len(self.ids)} frames.')
 
@@ -105,6 +114,26 @@ class BasicDataset(Dataset):
                             [0.0, 0.0, -1.0]])
 
         return mat_cam
+
+    # compute vertices and joints given mano parameters with axis-angle rotations
+    @classmethod
+    def compute_vertices_and_joints(cls, mano_params, layer_mano_right, layer_mano_left):
+        mano_params = torch.from_numpy(mano_params[np.newaxis, ...]).float()
+        shape = torch.zeros((mano_params.shape[0], 10))
+
+        vertices_right, joints_right = layer_mano_right(mano_params[:, :48],
+                                                        th_betas=shape,
+                                                        th_trans=mano_params[:, 48:51])
+        vertices_left, joints_left = layer_mano_left(mano_params[:, 51:99],
+                                                     th_betas=shape,
+                                                     th_trans=mano_params[:, 99:102])
+
+        vertices_right = vertices_right.numpy().squeeze()
+        vertices_left = vertices_left.numpy().squeeze()
+        joints_right = joints_right.numpy().squeeze()
+        joints_left = joints_left.numpy().squeeze()
+
+        return np.concatenate((vertices_right, vertices_left), 0), np.concatenate((joints_right, joints_left), 0)
 
     # convert events to LNES frames
     @classmethod
@@ -168,6 +197,13 @@ class BasicDataset(Dataset):
         rot_vm = view_matrix[:3, :3]
 
         params_new = np.zeros(134)
+        params_axisangle = np.zeros(102)
+
+        # # TEST
+        # params_test = np.zeros(102)
+        # print('hand', np.concatenate((params_mano[0]['pose'], params_mano[0]['trans'],
+        #                               params_mano[1]['pose'], params_mano[1]['trans']), 0))
+        # # TEST
 
         for h, hand in enumerate(params_mano):
             # global MANO rotation in MANO camera frame
@@ -175,16 +211,49 @@ class BasicDataset(Dataset):
             trans_mano = hand['trans']
             trans_manocam = trans_mano - camera_relative
 
-            params_new[h * 67 + 0:h * 67 + 4] = (R.from_matrix(rot_vm) * R.from_rotvec(rot_mano)).as_quat()
+            rot_global = R.from_matrix(rot_vm) * R.from_rotvec(rot_mano)
+            params_axisangle[h * 51 + 0:h * 51 + 48] = np.concatenate((rot_global.as_rotvec(), hand['pose'][3:48]), 0)
+            params_new[h * 67 + 0:h * 67 + 4] = rot_global.as_quat()
             params_new[h * 67 + 4:h * 67 + 64] = R.from_rotvec(hand['pose'][3:48].reshape(15, 3)).as_quat()\
                 .reshape(60)
-            params_new[h * 67 + 64:h * 67 + 67] = -roots[h] + rot_vm.dot(roots[h] + trans_manocam)
+            rots_temp = params_new[h * 67 + 0:h * 67 + 64].reshape(16, 4)
+            params_new[h * 67 + 0:h * 67 + 64] = np.concatenate((rots_temp[:, [3]], rots_temp[:, 0:3]), 1).reshape(64)
 
-        return params_new
+            params_new[h * 67 + 64:h * 67 + 67] = -roots[h] + rot_vm.dot(roots[h] + trans_manocam)
+            params_axisangle[h * 51 + 48:h * 51 + 51] = params_new[h * 67 + 64:h * 67 + 67]
+
+            # # TEST
+            # rots_test = params_new[h * 67 + 0:h * 67 + 64].reshape(16, 4)
+            # params_new[h * 67 + 0:h * 67 + 64] = np.concatenate((rots_test[:, 1:4], rots_test[:, [0]]), 1).reshape(64)
+            # params_test[h * 51 + 0:h * 51 + 48] = R.from_quat(params_new[h * 67 + 0:h * 67 + 64].reshape(16, 4))\
+            #     .as_rotvec().reshape(48)
+            # params_test[h * 51 + 48:h * 51 + 51] = params_new[h * 67 + 64:h * 67 + 67]
+            # # TEST
+
+        # # TEST
+        # print('params_test', params_test)
+        # print('diff', params_test - np.concatenate((params_mano[0]['pose'], params_mano[0]['trans'],
+        #                                             params_mano[1]['pose'], params_mano[1]['trans']), 0))
+        # # TEST
+
+        return params_new, params_axisangle
+
+    # project vertices given an intrinsic camera matrix
+    @classmethod
+    def project_vertices(cls, vertices, mat_cam):
+        vertices_intrinsic = vertices.dot(mat_cam.transpose())
+        vertices_projected = vertices_intrinsic[:, 0:2] / vertices_intrinsic[:, [2]]
+
+        return vertices_projected
 
     # get one item for a batch
     def __getitem__(self, i):
         idx = self.ids[i]
+
+        # # TEST
+        # print('idx', idx)
+        # # TEST
+
         smaller_than = idx < self.len_until_reverse
         n = len(smaller_than) - np.argmin(smaller_than) - 1
 
@@ -203,8 +272,7 @@ class BasicDataset(Dataset):
         i_file_start = f_start // interval
         i_file_finish = f_finish // interval
 
-        len_digits_interval = 3     # len(str((self.num_frames[n] - 1) // interval))
-        len_digits_interval_masks = 5   # len(str(self.num_frames[n] - 1) // interval_masks)
+        len_digits_interval = len(str((self.num_frames[n] - 1) // interval))    # 3
 
         # start file
         file_events_start = os.path.join(self.events_dir, prefix_dataset + name + '_' + aa + '_' + ap,
@@ -236,35 +304,20 @@ class BasicDataset(Dataset):
         file_mano = os.path.join(self.mano_dir, prefix_dataset + name,
                                  str(f // interval).zfill(len_digits_interval) + '.pkl')
 
-        # mat_intrinsic, mat_extrinsic = self.compute_camera_matrices(name, aa, ap, self.res)
-
         with open(file_mano, 'rb') as file:
             frame_mano = pickle.load(file)[f]
 
-        mano_params = self.preprocess_mano(frame_mano, aa, ap, self.roots)
+        mano_params, mano_params_axisangle = self.preprocess_mano(frame_mano, aa, ap, self.roots)
+        vertices, joints_3d = self.compute_vertices_and_joints(mano_params_axisangle, self.layer_mano_right,
+                                                               self.layer_mano_left)
+        joints_2d = self.project_vertices(joints_3d, mat_cam)
 
-        mask = None
-
-        if self.use_unet:
-            file_mask = os.path.join(self.masks_dir, prefix_dataset + name + '_' + aa + '_' + ap,
-                                     str(f // interval_masks).zfill(len_digits_interval_masks) + '.npz')
-
-            with np.load(file_mask) as data:
-                mask = data['arr_0'][f % interval_masks]
-
-            mask = self.preprocess_mask(mask)
-
-        if self.use_unet:
-            return {
-                'lnes': torch.from_numpy(lnes).type(torch.FloatTensor),
-                'mask': torch.from_numpy(mask).type(torch.FloatTensor),
-                'mano': torch.from_numpy(mano_params).type(torch.FloatTensor)
-            }
-        else:
-            return {
-                'lnes': torch.from_numpy(lnes).type(torch.FloatTensor),
-                'mano': torch.from_numpy(mano_params).type(torch.FloatTensor)
-            }
+        return {
+            'lnes': torch.from_numpy(lnes).type(torch.FloatTensor),
+            'mano': torch.from_numpy(mano_params).type(torch.FloatTensor),
+            'joints_3d': torch.from_numpy(joints_3d).type(torch.FloatTensor),
+            'joints_2d': torch.from_numpy(joints_2d).type(torch.FloatTensor)
+        }
 
 
 def deploy_dataset(events_dir, mano_dir, masks_dir):

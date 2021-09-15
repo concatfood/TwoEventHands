@@ -134,8 +134,7 @@ class ResNet(nn.Module):
         groups: int = 1,
         width_per_group: int = 64,
         replace_stride_with_dilation: Optional[List[bool]] = None,
-        norm_layer: Optional[Callable[..., nn.Module]] = None,
-        use_unet: bool = True
+        norm_layer: Optional[Callable[..., nn.Module]] = None
     ) -> None:
         super(ResNet, self).__init__()
         if norm_layer is None:
@@ -153,17 +152,8 @@ class ResNet(nn.Module):
                              "or a 3-element tuple, got {}".format(replace_stride_with_dilation))
         self.groups = groups
         self.base_width = width_per_group
-        self.use_unet = use_unet
-
-        self.conv1 = None
-
-        if self.use_unet:
-            self.conv1 = nn.Conv2d(5, self.inplanes, kernel_size=7, stride=2, padding=3,
-                                   bias=False)
-        else:
-            self.conv1 = nn.Conv2d(2, self.inplanes, kernel_size=7, stride=2, padding=3,
-                                   bias=False)
-
+        self.conv1 = nn.Conv2d(2, self.inplanes, kernel_size=7, stride=2, padding=3,
+                               bias=False)
         self.bn1 = norm_layer(self.inplanes)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
