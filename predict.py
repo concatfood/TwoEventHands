@@ -3,11 +3,14 @@ import numpy as np
 import os
 from pathlib import Path
 import pickle
-from scipy.spatial.transform import Rotation as R
+from pytorch3d.transforms import matrix_to_quaternion
+from pytorch3d.transforms import quaternion_to_axis_angle
+from pytorch3d.transforms import rotation_6d_to_matrix
 from TEHNet import TEHNet
 from tqdm import tqdm
 import torch
 from utils.dataset import BasicDataset
+from utils.one_euro_filter import OneEuroFilter
 
 
 # relative directories
@@ -21,6 +24,9 @@ res = (240, 180)
 # framerates
 fps_in = 1000
 fps_out = 30
+
+# temporal filtering
+one_euro_filter = None
 
 
 # load all events
@@ -44,7 +50,9 @@ def load_events(name_sequence):
 
 
 # predict segmentation mask and MANO parameters
-def predict(net, lnes, device):
+def predict(net, lnes, device, t):
+    global one_euro_filter
+
     net.eval()
 
     lnes = torch.from_numpy(lnes)
@@ -56,18 +64,27 @@ def predict(net, lnes, device):
         params = mano_output.squeeze(0)
         params = params.cpu().numpy()
 
+    if one_euro_filter is None:
+        one_euro_filter = OneEuroFilter(t, params, dx0=np.array([0.0]), min_cutoff=np.array([1.0]),
+                                        beta=np.array([0.0]), d_cutoff=np.array([1.0]))
+        params_smoothed = params
+    else:
+        params_smoothed = one_euro_filter(t, params)
+
     params_axisangle = np.zeros(102)
+    params_axisangle_smoothed = np.zeros(102)
 
     for h in range(2):
-        rots_temp = params[h * 67 + 0:h * 67 + 64].reshape(16, 4)
-        params[h * 67 + 0:h * 67 + 64] = np.concatenate((rots_temp[:, 1:4], rots_temp[:, [0]]), 1).reshape(64)
-        params_axisangle[h * 51 + 0:h * 51 + 48] = R.from_quat(params[h * 67 + 0:h * 67 + 64].reshape(16, 4))\
-            .as_rotvec().reshape(48)
-        params_axisangle[h * 51 + 48:h * 51 + 51] = params[h * 67 + 64:h * 67 + 67]
+        params_axisangle[h * 51 + 0:h * 51 + 48] = quaternion_to_axis_angle(matrix_to_quaternion(rotation_6d_to_matrix(
+            torch.from_numpy(params[h * 99 + 0:h * 99 + 96].reshape(16, 6))))).reshape(48)
+        params_axisangle[h * 51 + 48:h * 51 + 51] = params[h * 99 + 96:h * 99 + 99]
 
-    params = params_axisangle
+        params_axisangle_smoothed[h * 51 + 0:h * 51 + 48] = quaternion_to_axis_angle(matrix_to_quaternion(
+            rotation_6d_to_matrix(torch.from_numpy(params_smoothed[h * 99 + 0:h * 99 + 96].reshape(16, 6)))))\
+            .reshape(48)
+        params_axisangle_smoothed[h * 51 + 48:h * 51 + 51] = params_smoothed[h * 99 + 96:h * 99 + 99]
 
-    return params
+    return params_axisangle, params_axisangle_smoothed
 
 
 # parse arguments
@@ -98,13 +115,14 @@ if __name__ == "__main__":
     net.load_state_dict(torch.load(os.path.join('checkpoints', args.model), map_location=device)['model'])
 
     mano_pred_seq = {}
+    mano_pred_seq_smoothed = {}
 
     for i_f, f_float in enumerate(tqdm(np.arange(0, len(events), fps_in / fps_out))):
-        f = int(round(f_float))
+        f = int(round(f_float))     # in milliseconds
 
         frames = events[max(0, f - l_lnes + 1):f + 1]
         lnes = BasicDataset.preprocess_events(frames, f - l_lnes + 1, res)
-        mano_pred = predict(net=net, lnes=lnes, device=device)
+        mano_pred, mano_pred_smoothed = predict(net=net, lnes=lnes, device=device, t=f / 1000)
 
         seq_dict = {i_f: [{'pose': mano_pred[0:48],
                            'shape': np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
@@ -115,11 +133,25 @@ if __name__ == "__main__":
                            'trans': mano_pred[99:102],
                            'hand_type': 'left'}]}
 
+        seq_dict_smoothed = {i_f: [{'pose': mano_pred_smoothed[0:48],
+                                    'shape': np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                                    'trans': mano_pred_smoothed[48:51],
+                                    'hand_type': 'right'},
+                                   {'pose': mano_pred_smoothed[51:99],
+                                    'shape': np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                                    'trans': mano_pred_smoothed[99:102],
+                                    'hand_type': 'left'}]}
+
         mano_pred_seq.update(seq_dict)
+        mano_pred_seq_smoothed.update(seq_dict_smoothed)
 
     dir_sequence_mano = os.path.join(dir_output, name_sequence)
     Path(dir_sequence_mano).mkdir(parents=True, exist_ok=True)
     out_mano = os.path.join(dir_sequence_mano, 'sequence_mano.pkl')
+    out_mano_smoothed = os.path.join(dir_sequence_mano, 'sequence_mano_smoothed.pkl')
 
     with open(out_mano, 'wb') as file:
         pickle.dump(mano_pred_seq, file)
+
+    with open(out_mano_smoothed, 'wb') as file:
+        pickle.dump(mano_pred_seq_smoothed, file)

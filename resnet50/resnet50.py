@@ -128,8 +128,9 @@ class ResNet(nn.Module):
         self,
         block: Type[Union[BasicBlock, Bottleneck]] = Bottleneck,
         layers: List[int] = [3, 4, 6, 3],
-        # num_parameters: int = 102,  # 102 = 51 * 2 = (3 * 15 + 3 + 3) * 2 MANO parameters (axis-angle)
-        num_parameters: int = 134,  # 134 = 67 * 2 = (4 * 15 + 4 + 3) * 2 MANO parameters (quaternion)
+        # num_parameters: int = 102,  # 102 = 51 * 2 = (3 * 16 + 3) * 2 MANO parameters (axis-angle)
+        # num_parameters: int = 134,  # 134 = 67 * 2 = (4 * 16 + 3) * 2 MANO parameters (quaternion)
+        num_parameters: int = 198,  # 198 = 99 * 2 = (6 * 16 + 3) * 2 MANO parameters (quaternion)
         zero_init_residual: bool = False,
         groups: int = 1,
         width_per_group: int = 64,

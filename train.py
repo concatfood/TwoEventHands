@@ -1,6 +1,7 @@
 import argparse
 from eval import eval_net
 import logging
+import numpy as np
 import os
 from shutil import copyfile
 import torch
@@ -18,8 +19,11 @@ dir_events = os.path.join('data', 'train', 'events')
 dir_mano = os.path.join('data', 'train', 'mano')
 dir_checkpoint = 'checkpoints'
 
+# percentage of data used for training
+percentage_data = 0.005
+
 # early stopping
-patience = 20
+patience = 10
 
 # resolution
 res = (240, 180)
@@ -29,12 +33,12 @@ l_lnes = 200
 
 # weights
 weight_mano = 1.0
-weight_3d = 0.0
-weight_2d = 0.0
+weight_3d = 1.0
+weight_2d = 0.004602373**2 * weight_3d
 
 
 # training function
-def train_net(net, device, epochs=1000, batch_size=64, lr=0.0001, save_cp=True, checkpoint=None):
+def train_net(net, device, epochs=1000, batch_size=64, lr=0.00001, save_cp=True, checkpoint=None):
     # setup data loader
     dataset = BasicDataset(dir_events, dir_mano, res, l_lnes)
 
@@ -50,16 +54,19 @@ def train_net(net, device, epochs=1000, batch_size=64, lr=0.0001, save_cp=True, 
                 else list(range(dataset.len_until[s], len(dataset))) for s in sequences_val]
 
     list_train = [item for sublist in list_train for item in sublist]
-    list_val = [item for sublist in list_val for item in sublist]
+
+    list_val_np = np.array([item for sublist in list_val for item in sublist])
+    indices_list_val_np = np.rint(np.arange(0, len(list_val_np), 1 / percentage_data)).astype(int)
+    list_val = list_val_np[indices_list_val_np].tolist()
 
     train = torch.utils.data.Subset(dataset, list_train)
     val = torch.utils.data.Subset(dataset, list_val)
     train_loader = DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
-    val_loader = DataLoader(val, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
+    val_loader = DataLoader(val, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
 
     # optimization and scheduling
-    optimizer = optim.RMSprop(net.parameters(), lr=lr, weight_decay=1e-8, momentum=0.9)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=10)
+    optimizer = optim.RMSprop(net.parameters(), lr=lr)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5)
 
     if checkpoint is not None:
         optimizer.load_state_dict(checkpoint['optimizer'])
@@ -88,9 +95,8 @@ def train_net(net, device, epochs=1000, batch_size=64, lr=0.0001, save_cp=True, 
 
     n_train = len(train_loader)
     n_val = len(val_loader)
-    percentage_data = 0.001
     iters_train = int(round(percentage_data * n_train))
-    iters_val = int(round(percentage_data * n_val))
+    iters_val = n_val
 
     # TensorBoard
     writer = SummaryWriter('runs/TEHNet')
@@ -101,6 +107,10 @@ def train_net(net, device, epochs=1000, batch_size=64, lr=0.0001, save_cp=True, 
         loss_train_3d = 0
         loss_train_2d = 0
         loss_train = 0
+
+        distance_train_mano = 0
+        distance_train_3d = 0
+        distance_train_2d = 0
 
         net.train()
 
@@ -127,15 +137,28 @@ def train_net(net, device, epochs=1000, batch_size=64, lr=0.0001, save_cp=True, 
             # forward and loss computation
             mano_pred, joints_3d_pred, joints_2d_pred = net(lnes)
 
-            loss_mano = weight_mano * mseloss(mano_pred, true_mano)
-            loss_3d = weight_3d * mseloss(joints_3d_pred, true_joints_3d)
-            loss_2d = weight_2d * mseloss(joints_2d_pred, true_joints_2d)
+            loss_mano = mseloss(mano_pred, true_mano)
+            loss_3d = mseloss(joints_3d_pred, true_joints_3d)
+            loss_2d = mseloss(joints_2d_pred, true_joints_2d)
             loss_train_mano += loss_mano.item()
             loss_train_3d += loss_3d.item()
             loss_train_2d += loss_2d.item()
-            loss_total = loss_mano + loss_3d + loss_2d
+            loss_total = weight_mano * loss_mano + weight_3d * loss_3d + weight_2d * loss_2d
 
             loss_train += loss_total.item()
+
+            # average accuracies calculated using l2 norm
+            diff_mano = mano_pred - true_mano
+            diff_mano = diff_mano.reshape((diff_mano.shape[0], diff_mano.shape[1]))
+            diff_joints_3d = joints_3d_pred - true_joints_3d
+            diff_joints_3d = diff_joints_3d.reshape((diff_joints_3d.shape[0] * diff_joints_3d.shape[1],
+                                                     diff_joints_3d.shape[2]))
+            diff_joints_2d = joints_2d_pred - true_joints_2d
+            diff_joints_2d = diff_joints_2d.reshape((diff_joints_2d.shape[0] * diff_joints_2d.shape[1],
+                                                     diff_joints_2d.shape[2]))
+            distance_train_mano += torch.mean(torch.norm(diff_mano, dim=1))
+            distance_train_3d += torch.mean(torch.norm(diff_joints_3d, dim=1))
+            distance_train_2d += torch.mean(torch.norm(diff_joints_2d, dim=1))
 
             # backward propagation
             optimizer.zero_grad()
@@ -150,14 +173,21 @@ def train_net(net, device, epochs=1000, batch_size=64, lr=0.0001, save_cp=True, 
         loss_train_mano /= iters_train
         loss_train_3d /= iters_train
         loss_train_2d /= iters_train
+        distance_train_mano /= iters_train
+        distance_train_3d /= iters_train
+        distance_train_2d /= iters_train
 
         # validation phase
         net.eval()
-        loss_valid, loss_valid_mano, loss_valid_3d, loss_valid_2d = eval_net(net, val_loader, device, epoch, iters_val)
+        loss_valid, loss_valid_mano, loss_valid_3d, loss_valid_2d, distance_valid_mano, distance_valid_3d,\
+        distance_valid_2d = eval_net(net, val_loader, device, epoch)
         loss_valid /= iters_val
         loss_valid_mano /= iters_val
         loss_valid_3d /= iters_val
         loss_valid_2d /= iters_val
+        distance_valid_mano /= iters_train
+        distance_valid_3d /= iters_train
+        distance_valid_2d /= iters_train
         scheduler.step(loss_valid)
 
         # log to TensorBoard
@@ -165,11 +195,17 @@ def train_net(net, device, epochs=1000, batch_size=64, lr=0.0001, save_cp=True, 
         writer.add_scalar('train loss mano', loss_train_mano, epoch)
         writer.add_scalar('train loss 3d', loss_train_3d, epoch)
         writer.add_scalar('train loss 2d', loss_train_2d, epoch)
+        writer.add_scalar('train distance mano', distance_train_mano, epoch)
+        writer.add_scalar('train distance 3d', distance_train_3d, epoch)
+        writer.add_scalar('train distance 2d', distance_train_2d, epoch)
 
         writer.add_scalar('valid loss total', loss_valid, epoch)
         writer.add_scalar('valid loss mano', loss_valid_mano, epoch)
         writer.add_scalar('valid loss 3d', loss_valid_3d, epoch)
         writer.add_scalar('valid loss 2d', loss_valid_2d, epoch)
+        writer.add_scalar('valid distance mano', distance_valid_mano, epoch)
+        writer.add_scalar('valid distance 3d', distance_valid_3d, epoch)
+        writer.add_scalar('valid distance 2d', distance_valid_2d, epoch)
 
         writer.add_scalar('learning rate', optimizer.param_groups[0]['lr'], epoch)
 
@@ -221,7 +257,7 @@ def get_args():
                         help='Number of epochs', dest='epochs')
     parser.add_argument('-b', '--batch-size', metavar='B', type=int, nargs='?', default=64,
                         help='Batch size', dest='batchsize')
-    parser.add_argument('-l', '--learning-rate', metavar='LR', type=float, nargs='?', default=0.0001,
+    parser.add_argument('-l', '--learning-rate', metavar='LR', type=float, nargs='?', default=0.00001,
                         help='Learning rate', dest='lr')
     parser.add_argument('-f', '--load', dest='load', type=str, default=False,
                         help='Load model from a .pth file')

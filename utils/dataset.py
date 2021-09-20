@@ -7,7 +7,14 @@ import os
 import os.path
 from pathlib import Path
 import pickle
-from scipy.spatial.transform import Rotation as R
+from pytorch3d.transforms import axis_angle_to_matrix
+from pytorch3d.transforms import axis_angle_to_quaternion
+from pytorch3d.transforms import matrix_to_quaternion
+from pytorch3d.transforms import matrix_to_rotation_6d
+from pytorch3d.transforms import quaternion_multiply
+from pytorch3d.transforms import quaternion_to_axis_angle
+from pytorch3d.transforms import quaternion_to_matrix
+from pytorch3d.transforms import rotation_6d_to_matrix
 import torch
 from torch.utils.data import Dataset
 
@@ -119,14 +126,17 @@ class BasicDataset(Dataset):
     @classmethod
     def compute_vertices_and_joints(cls, mano_params, layer_mano_right, layer_mano_left):
         mano_params = torch.from_numpy(mano_params[np.newaxis, ...]).float()
+
+        axisangle_right = quaternion_to_axis_angle(matrix_to_quaternion(rotation_6d_to_matrix(
+            mano_params[:, 0:96].reshape(16, 6)))).reshape(1, 48)
+        trans_right = mano_params[:, 96:99]
+        axisangle_left = quaternion_to_axis_angle(matrix_to_quaternion(rotation_6d_to_matrix(
+            mano_params[:, 99:195].reshape(16, 6)))).reshape(1, 48)
+        trans_left = mano_params[:, 195:198]
         shape = torch.zeros((mano_params.shape[0], 10))
 
-        vertices_right, joints_right = layer_mano_right(mano_params[:, :48],
-                                                        th_betas=shape,
-                                                        th_trans=mano_params[:, 48:51])
-        vertices_left, joints_left = layer_mano_left(mano_params[:, 51:99],
-                                                     th_betas=shape,
-                                                     th_trans=mano_params[:, 99:102])
+        vertices_right, joints_right = layer_mano_right(axisangle_right, th_betas=shape, th_trans=trans_right)
+        vertices_left, joints_left = layer_mano_left(axisangle_left, th_betas=shape, th_trans=trans_left)
 
         vertices_right = vertices_right.numpy().squeeze()
         vertices_left = vertices_left.numpy().squeeze()
@@ -196,14 +206,7 @@ class BasicDataset(Dataset):
 
         rot_vm = view_matrix[:3, :3]
 
-        params_new = np.zeros(134)
-        params_axisangle = np.zeros(102)
-
-        # # TEST
-        # params_test = np.zeros(102)
-        # print('hand', np.concatenate((params_mano[0]['pose'], params_mano[0]['trans'],
-        #                               params_mano[1]['pose'], params_mano[1]['trans']), 0))
-        # # TEST
+        params_new = np.zeros(198)
 
         for h, hand in enumerate(params_mano):
             # global MANO rotation in MANO camera frame
@@ -211,32 +214,15 @@ class BasicDataset(Dataset):
             trans_mano = hand['trans']
             trans_manocam = trans_mano - camera_relative
 
-            rot_global = R.from_matrix(rot_vm) * R.from_rotvec(rot_mano)
-            params_axisangle[h * 51 + 0:h * 51 + 48] = np.concatenate((rot_global.as_rotvec(), hand['pose'][3:48]), 0)
-            params_new[h * 67 + 0:h * 67 + 4] = rot_global.as_quat()
-            params_new[h * 67 + 4:h * 67 + 64] = R.from_rotvec(hand['pose'][3:48].reshape(15, 3)).as_quat()\
-                .reshape(60)
-            rots_temp = params_new[h * 67 + 0:h * 67 + 64].reshape(16, 4)
-            params_new[h * 67 + 0:h * 67 + 64] = np.concatenate((rots_temp[:, [3]], rots_temp[:, 0:3]), 1).reshape(64)
+            params_new[h * 99 + 0:h * 99 + 6] = matrix_to_rotation_6d(quaternion_to_matrix(quaternion_multiply(
+                matrix_to_quaternion(torch.from_numpy(rot_vm)), axis_angle_to_quaternion(torch.from_numpy(rot_mano)))))\
+                .numpy().reshape(6)
+            params_new[h * 99 + 6:h * 99 + 96] = matrix_to_rotation_6d(axis_angle_to_matrix(torch.from_numpy(
+                hand['pose'][3:48].reshape(15, 3)))).numpy().reshape(90)
 
-            params_new[h * 67 + 64:h * 67 + 67] = -roots[h] + rot_vm.dot(roots[h] + trans_manocam)
-            params_axisangle[h * 51 + 48:h * 51 + 51] = params_new[h * 67 + 64:h * 67 + 67]
+            params_new[h * 99 + 96:h * 99 + 99] = -roots[h] + rot_vm.dot(roots[h] + trans_manocam)
 
-            # # TEST
-            # rots_test = params_new[h * 67 + 0:h * 67 + 64].reshape(16, 4)
-            # params_new[h * 67 + 0:h * 67 + 64] = np.concatenate((rots_test[:, 1:4], rots_test[:, [0]]), 1).reshape(64)
-            # params_test[h * 51 + 0:h * 51 + 48] = R.from_quat(params_new[h * 67 + 0:h * 67 + 64].reshape(16, 4))\
-            #     .as_rotvec().reshape(48)
-            # params_test[h * 51 + 48:h * 51 + 51] = params_new[h * 67 + 64:h * 67 + 67]
-            # # TEST
-
-        # # TEST
-        # print('params_test', params_test)
-        # print('diff', params_test - np.concatenate((params_mano[0]['pose'], params_mano[0]['trans'],
-        #                                             params_mano[1]['pose'], params_mano[1]['trans']), 0))
-        # # TEST
-
-        return params_new, params_axisangle
+        return params_new
 
     # project vertices given an intrinsic camera matrix
     @classmethod
@@ -249,10 +235,6 @@ class BasicDataset(Dataset):
     # get one item for a batch
     def __getitem__(self, i):
         idx = self.ids[i]
-
-        # # TEST
-        # print('idx', idx)
-        # # TEST
 
         smaller_than = idx < self.len_until_reverse
         n = len(smaller_than) - np.argmin(smaller_than) - 1
@@ -307,9 +289,9 @@ class BasicDataset(Dataset):
         with open(file_mano, 'rb') as file:
             frame_mano = pickle.load(file)[f]
 
-        mano_params, mano_params_axisangle = self.preprocess_mano(frame_mano, aa, ap, self.roots)
-        vertices, joints_3d = self.compute_vertices_and_joints(mano_params_axisangle, self.layer_mano_right,
-                                                               self.layer_mano_left)
+        mano_params = self.preprocess_mano(frame_mano, aa, ap, self.roots)
+        vertices, joints_3d = self.compute_vertices_and_joints(mano_params, self.layer_mano_right, self.layer_mano_left)
+
         joints_2d = self.project_vertices(joints_3d, mat_cam)
 
         return {

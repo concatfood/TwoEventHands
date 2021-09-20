@@ -1,4 +1,5 @@
 import math
+import numpy as np
 
 
 def smoothing_factor(t_e, cutoff):
@@ -10,17 +11,19 @@ def exponential_smoothing(a, x, x_prev):
     return a * x + (1 - a) * x_prev
 
 
+# original filter adjusted for numpy arrays
 class OneEuroFilter:
-    def __init__(self, t0, x0, dx0=0.0, min_cutoff=1.0, beta=0.0,
-                 d_cutoff=1.0):
+    def __init__(self, t0, x0, dx0=np.array([0.0]), min_cutoff=np.array([1.0]), beta=np.array([0.0]),
+                 d_cutoff=np.array([1.0])):
         """Initialize the one euro filter."""
         # The parameters.
-        self.min_cutoff = float(min_cutoff)
-        self.beta = float(beta)
-        self.d_cutoff = float(d_cutoff)
+        self.min_cutoff = min_cutoff.astype(float) if min_cutoff.shape[0] == x0.shape[0]\
+            else np.ones(x0.shape).astype(float)
+        self.beta = beta.astype(float) if beta.shape[0] == x0.shape[0] else np.zeros(x0.shape).astype(float)
+        self.d_cutoff = d_cutoff.astype(float) if d_cutoff.shape[0] == x0.shape[0] else np.ones(x0.shape).astype(float)
         # Previous values.
-        self.x_prev = float(x0)
-        self.dx_prev = float(dx0)
+        self.x_prev = x0.astype(float)
+        self.dx_prev = dx0.astype(float) if dx0.shape[0] == x0.shape[0] else np.zeros(x0.shape).astype(float)
         self.t_prev = float(t0)
 
     def __call__(self, t, x):
@@ -33,7 +36,7 @@ class OneEuroFilter:
         dx_hat = exponential_smoothing(a_d, dx, self.dx_prev)
 
         # The filtered signal.
-        cutoff = self.min_cutoff + self.beta * abs(dx_hat)
+        cutoff = self.min_cutoff + self.beta * np.abs(dx_hat)
         a = smoothing_factor(t_e, cutoff)
         x_hat = exponential_smoothing(a, x, self.x_prev)
 

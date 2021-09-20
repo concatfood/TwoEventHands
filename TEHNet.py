@@ -1,7 +1,9 @@
 from manopth.manolayer import ManoLayer
 import math
 import numpy as np
+from pytorch3d.transforms import matrix_to_quaternion
 from pytorch3d.transforms import quaternion_to_axis_angle
+from pytorch3d.transforms import rotation_6d_to_matrix
 from resnet50 import ResNet
 import torch
 import torch.nn as nn
@@ -33,23 +35,20 @@ class TEHNet(nn.Module):
         mano_params = self.resnet(x)
 
         # quaternion to axis-angle
-        mano_rots_quat_right = mano_params[:, 0:64].reshape(-1, 16, 4)
-        mano_rots_quat_left = mano_params[:, 67:131].reshape(-1, 16, 4)
-        mano_trans_right = mano_params[:, 64:67]
-        mano_trans_left = mano_params[:, 131:134]
-        mano_rots_axisangle_right = quaternion_to_axis_angle(mano_rots_quat_right).reshape(-1, 48)
-        mano_rots_axisangle_left = quaternion_to_axis_angle(mano_rots_quat_left).reshape(-1, 48)
-        mano_params_manolayer = torch.cat([mano_rots_axisangle_right, mano_trans_right,
-                                           mano_rots_axisangle_left, mano_trans_left], dim=1)
+        mano_rots_6d_right = mano_params[:, 0:96].reshape(-1, 16, 6)
+        mano_rots_6d_left = mano_params[:, 99:195].reshape(-1, 16, 6)
+        mano_trans_right = mano_params[:, 96:99]
+        mano_trans_left = mano_params[:, 195:198]
+        mano_rots_axisangle_right = quaternion_to_axis_angle(matrix_to_quaternion(rotation_6d_to_matrix(
+            mano_rots_6d_right))).reshape(-1, 48)
+        mano_rots_axisangle_left = quaternion_to_axis_angle(matrix_to_quaternion(rotation_6d_to_matrix(
+            mano_rots_6d_left))).reshape(-1, 48)
+        shape = torch.zeros((x.shape[0], 10)).cuda()
 
-        vertices_right, joints_right = self.layer_mano_right(mano_params_manolayer[:, :48],
-                                                             th_betas=torch.zeros((mano_params_manolayer.shape[0], 10))
-                                                             .cuda(),
-                                                             th_trans=mano_params_manolayer[:, 48:51])
-        vertices_left, joints_left = self.layer_mano_left(mano_params_manolayer[:, 51:99],
-                                                          th_betas=torch.zeros((mano_params_manolayer.shape[0], 10))
-                                                          .cuda(),
-                                                          th_trans=mano_params_manolayer[:, 99:102])
+        vertices_right, joints_right = self.layer_mano_right(mano_rots_axisangle_right, th_betas=shape,
+                                                             th_trans=mano_trans_right)
+        vertices_left, joints_left = self.layer_mano_left(mano_rots_axisangle_left, th_betas=shape,
+                                                          th_trans=mano_trans_left)
 
         joints_3d = torch.cat((joints_right, joints_left), 1)
         joints_intrinsic = torch.matmul(joints_3d, torch.transpose(mat_cam, 0, 1))
