@@ -6,13 +6,13 @@ For this, we use [MANO](https://mano.is.tue.mpg.de/) parameters.
 The network is based on [Pytorch-UNet](https://github.com/milesial/Pytorch-UNet) for semantic segmentation and [ResNet50](https://github.com/pytorch/vision/blob/master/torchvision/models/resnet.py) for parameter regression.
 
 ## Usage
-**Note : Use Python 3.6 or newer (due to Pytorch-UNet)**
 
 ### Requirements
 Requirements include but are not limited to:
 * NumPy
 * Pillow
 * PyTorch
+* PyTorch3D
 * OpenCV
 
 ### Training
