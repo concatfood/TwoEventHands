@@ -20,10 +20,15 @@ dir_mano = os.path.join('data', 'train', 'mano')
 dir_checkpoint = 'checkpoints'
 
 # percentage of data used for training
-percentage_data = 0.005
+percentage_scale = 0.1
+percentage_data = 0.005 * percentage_scale
 
-# early stopping
-patience = 10
+# optimization parameters
+batch_size = 64
+learning_rate = 0.001
+patience = int(round(10 / percentage_scale))
+step_size = int(round(5 / percentage_scale))
+weight_decay = 0.01
 
 # resolution
 res = (240, 180)
@@ -33,12 +38,16 @@ l_lnes = 200
 
 # weights
 weight_mano = 1.0
-weight_3d = 1.0
+weight_rot = 1.0
+weight_trans = 500
+weight_3d = 0.1
 weight_2d = 0.004602373**2 * weight_3d
+threshold_3d = 0.05     # 5cm (per dimension)
+threshold_2d = 10       # 10px (per dimension)
 
 
 # training function
-def train_net(net, device, epochs=1000, batch_size=64, lr=0.00001, save_cp=True, checkpoint=None):
+def train_net(net, device, epochs=1000, save_cp=True, checkpoint=None):
     # setup data loader
     dataset = BasicDataset(dir_events, dir_mano, res, l_lnes)
 
@@ -65,8 +74,8 @@ def train_net(net, device, epochs=1000, batch_size=64, lr=0.00001, save_cp=True,
     val_loader = DataLoader(val, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
 
     # optimization and scheduling
-    optimizer = optim.RMSprop(net.parameters(), lr=lr)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5)
+    optimizer = optim.Adam(net.parameters(), lr=learning_rate)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=step_size)
 
     if checkpoint is not None:
         optimizer.load_state_dict(checkpoint['optimizer'])
@@ -74,6 +83,8 @@ def train_net(net, device, epochs=1000, batch_size=64, lr=0.00001, save_cp=True,
 
     # losses
     mseloss = nn.MSELoss()
+    loss3d = nn.SmoothL1Loss(beta=threshold_3d)     # multiply by beta to achieve equivalent HuberLoss
+    loss2d = nn.SmoothL1Loss(beta=threshold_2d)     # multiply by beta to achieve equivalent HuberLoss
 
     # early stopping values
     epoch_best = -1 if checkpoint is None else checkpoint['epoch_best']
@@ -81,7 +92,7 @@ def train_net(net, device, epochs=1000, batch_size=64, lr=0.00001, save_cp=True,
 
     # start where we left of last time
     epoch_start = 0 if checkpoint is None else checkpoint['epoch'] + 1
-    lr = lr if checkpoint is None else optimizer.param_groups[0]['lr']
+    lr = learning_rate if checkpoint is None else optimizer.param_groups[0]['lr']
 
     global_step = 0 if checkpoint is None else checkpoint['global_step']
 
@@ -137,9 +148,14 @@ def train_net(net, device, epochs=1000, batch_size=64, lr=0.00001, save_cp=True,
             # forward and loss computation
             mano_pred, joints_3d_pred, joints_2d_pred = net(lnes)
 
-            loss_mano = mseloss(mano_pred, true_mano)
-            loss_3d = mseloss(joints_3d_pred, true_joints_3d)
-            loss_2d = mseloss(joints_2d_pred, true_joints_2d)
+            # weighting
+            loss_rot = mseloss(torch.cat((mano_pred[:, 0:96], mano_pred[:, 99:195]), 1),
+                               torch.cat((true_mano[:, 0:96], true_mano[:, 99:195]), 1))
+            loss_trans = mseloss(torch.cat((mano_pred[:, 96:99], mano_pred[:, 195:198]), 1),
+                                 torch.cat((true_mano[:, 96:99], true_mano[:, 195:198]), 1))
+            loss_mano = weight_rot * loss_rot + weight_trans * loss_trans
+            loss_3d = threshold_3d * loss3d(joints_3d_pred, true_joints_3d)
+            loss_2d = threshold_2d * loss2d(joints_2d_pred, true_joints_2d)
             loss_train_mano += loss_mano.item()
             loss_train_3d += loss_3d.item()
             loss_train_2d += loss_2d.item()
@@ -185,9 +201,9 @@ def train_net(net, device, epochs=1000, batch_size=64, lr=0.00001, save_cp=True,
         loss_valid_mano /= iters_val
         loss_valid_3d /= iters_val
         loss_valid_2d /= iters_val
-        distance_valid_mano /= iters_train
-        distance_valid_3d /= iters_train
-        distance_valid_2d /= iters_train
+        distance_valid_mano /= iters_val
+        distance_valid_3d /= iters_val
+        distance_valid_2d /= iters_val
         scheduler.step(loss_valid)
 
         # log to TensorBoard
@@ -254,11 +270,7 @@ def get_args():
     parser = argparse.ArgumentParser(description='Train the UNet on LNES',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('-e', '--epochs', metavar='E', type=int, default=1000,
-                        help='Number of epochs', dest='epochs')
-    parser.add_argument('-b', '--batch-size', metavar='B', type=int, nargs='?', default=64,
-                        help='Batch size', dest='batchsize')
-    parser.add_argument('-l', '--learning-rate', metavar='LR', type=float, nargs='?', default=0.00001,
-                        help='Learning rate', dest='lr')
+                        help='Number of maximum epochs', dest='epochs')
     parser.add_argument('-f', '--load', dest='load', type=str, default=False,
                         help='Load model from a .pth file')
 
@@ -284,4 +296,4 @@ if __name__ == '__main__':
     net.to(device=device)
     # net = nn.DataParallel(net)
 
-    train_net(net=net, device=device, epochs=args.epochs, batch_size=args.batchsize, lr=args.lr, checkpoint=checkpoint)
+    train_net(net=net, device=device, epochs=args.epochs, checkpoint=checkpoint)
