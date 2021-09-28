@@ -1,16 +1,18 @@
 import torch
-import torch.nn.functional as F
 from tqdm import tqdm
+from utils.huberloss import huber_loss
 
 
 # weights
 weight_mano = 1.0
 weight_rot = 1.0
 weight_trans = 500
-weight_3d = 0.1
+weight_3d = weight_trans
+# weight_2d = 0.0
 weight_2d = 0.004602373**2 * weight_3d
-threshold_3d = 0.05     # 5cm (per dimension)
-threshold_2d = 10       # 10px (per dimension)
+weights_mano = torch.cat((weight_rot * torch.ones(96), weight_trans * torch.ones(3),
+                          weight_rot * torch.ones(96), weight_trans * torch.ones(3))).cuda()
+# threshold_2d = 10.0
 
 
 # evaluate network
@@ -38,33 +40,38 @@ def eval_net(net, loader, device, epoch):
         with torch.no_grad():
             mano_pred, joints_3d_pred, joints_2d_pred = net(lnes)
 
-        # weighting
-        loss_rot = F.mse_loss(torch.cat((mano_pred[:, 0:96], mano_pred[:, 99:195]), 1),
-                              torch.cat((true_mano[:, 0:96], true_mano[:, 99:195]), 1))
-        loss_trans = F.mse_loss(torch.cat((mano_pred[:, 96:99], mano_pred[:, 195:198]), 1),
-                                torch.cat((true_mano[:, 96:99], true_mano[:, 195:198]), 1))
-        loss_mano = weight_rot * loss_rot + weight_trans * loss_trans
-        loss_3d = threshold_3d * F.smooth_l1_loss(joints_3d_pred, true_joints_3d)
-        loss_2d = threshold_2d * F.smooth_l1_loss(joints_2d_pred, true_joints_2d)
+        diff_mano = weights_mano * (mano_pred - true_mano)
+        diff_joints_3d = joints_3d_pred - true_joints_3d
+        diff_joints_3d = diff_joints_3d.reshape((-1, diff_joints_3d.shape[2]))
+        diff_joints_2d = joints_2d_pred - true_joints_2d
+        diff_joints_2d = diff_joints_2d.reshape((-1, diff_joints_2d.shape[2]))
+
+        # norm_mano = torch.norm(diff_mano, dim=1)
+        norm_mano = torch.abs(diff_mano)
+        norm_joints_3d = torch.norm(diff_joints_3d, dim=1)
+        norm_joints_2d = torch.norm(diff_joints_2d, dim=1)
+        distance_valid_mano += torch.mean(norm_mano)
+        distance_valid_3d += torch.mean(norm_joints_3d)
+        distance_valid_2d += torch.mean(norm_joints_2d)
+
+        norm_squared_mano = 0.5 * norm_mano.pow(2)
+        norm_squared_joints_3d = 0.5 * norm_joints_3d.pow(2)
+        # norm_squared_joints_2d = 0.5 * norm_joints_2d.pow(2)
+        loss_mano = torch.mean(norm_squared_mano)
+        loss_3d = torch.mean(norm_squared_joints_3d)
+        # loss_2d = torch.mean(norm_squared_joints_2d)
+        loss_2d = torch.mean(norm_joints_2d)
+        # loss_2d = huber_loss(norm_joints_2d, delta=threshold_2d)
+
+        weight_2d_by_epoch = weight_2d if epoch >= 10 else 0.0
+
+        # loss_total = weight_mano * loss_mano + weight_3d * loss_3d + weight_2d * loss_2d
+        loss_total = weight_mano * loss_mano + weight_3d * loss_3d + weight_2d_by_epoch * loss_2d
+
+        loss_valid += loss_total.item()
         loss_valid_mano += loss_mano.item()
         loss_valid_3d += loss_3d.item()
         loss_valid_2d += loss_2d.item()
-        loss_total = weight_mano * loss_mano + weight_3d * loss_3d + weight_2d * loss_2d
-
-        loss_valid += loss_total.item()
-
-        # average accuracies calculated using l2 norm
-        diff_mano = mano_pred - true_mano
-        diff_mano = diff_mano.reshape((diff_mano.shape[0], diff_mano.shape[1]))
-        diff_joints_3d = joints_3d_pred - true_joints_3d
-        diff_joints_3d = diff_joints_3d.reshape((diff_joints_3d.shape[0] * diff_joints_3d.shape[1],
-                                                 diff_joints_3d.shape[2]))
-        diff_joints_2d = joints_2d_pred - true_joints_2d
-        diff_joints_2d = diff_joints_2d.reshape((diff_joints_2d.shape[0] * diff_joints_2d.shape[1],
-                                                 diff_joints_2d.shape[2]))
-        distance_valid_mano += torch.mean(torch.norm(diff_mano, dim=1))
-        distance_valid_3d += torch.mean(torch.norm(diff_joints_3d, dim=1))
-        distance_valid_2d += torch.mean(torch.norm(diff_joints_2d, dim=1))
 
         # log phase, epoch and iteration
         with open('phase_epoch_iteration.txt', "w") as f:

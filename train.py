@@ -5,12 +5,12 @@ import numpy as np
 import os
 from shutil import copyfile
 import torch
-import torch.nn as nn
 from torch import optim
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from utils.dataset import BasicDataset
+from utils.huberloss import HuberLoss
 from TEHNet import TEHNet
 
 
@@ -19,35 +19,38 @@ dir_events = os.path.join('data', 'train', 'events')
 dir_mano = os.path.join('data', 'train', 'mano')
 dir_checkpoint = 'checkpoints'
 
-# percentage of data used for training
-percentage_scale = 0.1
-percentage_data = 0.005 * percentage_scale
-
-# optimization parameters
-batch_size = 64
-learning_rate = 0.001
-patience = int(round(10 / percentage_scale))
-step_size = int(round(5 / percentage_scale))
-weight_decay = 0.01
-
 # resolution
 res = (240, 180)
 
 # LNES window size
 l_lnes = 200
 
+# percentage of data used for training
+percentage_scale = 0.01
+percentage_data = 0.005 * percentage_scale
+
+# optimization parameters
+batch_size = 64
+learning_rate = 0.001
+patience = int(round(5 / percentage_scale))
+step_size = int(round(2 / percentage_scale))
+# weight_decay = 0.01
+weight_decay = 0.0
+
 # weights
 weight_mano = 1.0
 weight_rot = 1.0
 weight_trans = 500
-weight_3d = 0.1
+weight_3d = weight_trans
+# weight_2d = 0.0
 weight_2d = 0.004602373**2 * weight_3d
-threshold_3d = 0.05     # 5cm (per dimension)
-threshold_2d = 10       # 10px (per dimension)
+weights_mano = torch.cat((weight_rot * torch.ones(96), weight_trans * torch.ones(3),
+                          weight_rot * torch.ones(96), weight_trans * torch.ones(3))).cuda()
+# threshold_2d = 10.0
 
 
 # training function
-def train_net(net, device, epochs=1000, save_cp=True, checkpoint=None):
+def train_net(net, device, epochs=100, save_cp=True, checkpoint=None):
     # setup data loader
     dataset = BasicDataset(dir_events, dir_mano, res, l_lnes)
 
@@ -74,17 +77,12 @@ def train_net(net, device, epochs=1000, save_cp=True, checkpoint=None):
     val_loader = DataLoader(val, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
 
     # optimization and scheduling
-    optimizer = optim.Adam(net.parameters(), lr=learning_rate)
+    optimizer = optim.Adam(net.parameters(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=step_size)
 
     if checkpoint is not None:
         optimizer.load_state_dict(checkpoint['optimizer'])
         scheduler.load_state_dict(checkpoint['scheduler'])
-
-    # losses
-    mseloss = nn.MSELoss()
-    loss3d = nn.SmoothL1Loss(beta=threshold_3d)     # multiply by beta to achieve equivalent HuberLoss
-    loss2d = nn.SmoothL1Loss(beta=threshold_2d)     # multiply by beta to achieve equivalent HuberLoss
 
     # early stopping values
     epoch_best = -1 if checkpoint is None else checkpoint['epoch_best']
@@ -103,6 +101,8 @@ def train_net(net, device, epochs=1000, save_cp=True, checkpoint=None):
       Learning rate:   {lr}
       Device:          {device.type}
     ''')
+
+    # huberloss_2d = HuberLoss(delta=threshold_2d)
 
     n_train = len(train_loader)
     n_val = len(val_loader)
@@ -148,33 +148,38 @@ def train_net(net, device, epochs=1000, save_cp=True, checkpoint=None):
             # forward and loss computation
             mano_pred, joints_3d_pred, joints_2d_pred = net(lnes)
 
-            # weighting
-            loss_rot = mseloss(torch.cat((mano_pred[:, 0:96], mano_pred[:, 99:195]), 1),
-                               torch.cat((true_mano[:, 0:96], true_mano[:, 99:195]), 1))
-            loss_trans = mseloss(torch.cat((mano_pred[:, 96:99], mano_pred[:, 195:198]), 1),
-                                 torch.cat((true_mano[:, 96:99], true_mano[:, 195:198]), 1))
-            loss_mano = weight_rot * loss_rot + weight_trans * loss_trans
-            loss_3d = threshold_3d * loss3d(joints_3d_pred, true_joints_3d)
-            loss_2d = threshold_2d * loss2d(joints_2d_pred, true_joints_2d)
+            diff_mano = weights_mano * (mano_pred - true_mano)
+            diff_joints_3d = joints_3d_pred - true_joints_3d
+            diff_joints_3d = diff_joints_3d.reshape((-1, diff_joints_3d.shape[2]))
+            diff_joints_2d = joints_2d_pred - true_joints_2d
+            diff_joints_2d = diff_joints_2d.reshape((-1, diff_joints_2d.shape[2]))
+
+            # norm_mano = torch.norm(diff_mano, dim=1)
+            norm_mano = torch.abs(diff_mano)
+            norm_joints_3d = torch.norm(diff_joints_3d, dim=1)
+            norm_joints_2d = torch.norm(diff_joints_2d, dim=1)
+            distance_train_mano += torch.mean(norm_mano)
+            distance_train_3d += torch.mean(norm_joints_3d)
+            distance_train_2d += torch.mean(norm_joints_2d)
+
+            norm_squared_mano = 0.5 * norm_mano.pow(2)
+            norm_squared_joints_3d = 0.5 * norm_joints_3d.pow(2)
+            # norm_squared_joints_2d = 0.5 * norm_joints_2d.pow(2)
+            loss_mano = torch.mean(norm_squared_mano)
+            loss_3d = torch.mean(norm_squared_joints_3d)
+            # loss_2d = torch.mean(norm_squared_joints_2d)
+            loss_2d = torch.mean(norm_joints_2d)
+            # loss_2d = huberloss_2d(norm_joints_2d)
+
+            weight_2d_by_epoch = weight_2d if epoch >= 10 else 0.0
+
+            # loss_total = weight_mano * loss_mano + weight_3d * loss_3d + weight_2d * loss_2d
+            loss_total = weight_mano * loss_mano + weight_3d * loss_3d + weight_2d_by_epoch * loss_2d
+
+            loss_train += loss_total.item()
             loss_train_mano += loss_mano.item()
             loss_train_3d += loss_3d.item()
             loss_train_2d += loss_2d.item()
-            loss_total = weight_mano * loss_mano + weight_3d * loss_3d + weight_2d * loss_2d
-
-            loss_train += loss_total.item()
-
-            # average accuracies calculated using l2 norm
-            diff_mano = mano_pred - true_mano
-            diff_mano = diff_mano.reshape((diff_mano.shape[0], diff_mano.shape[1]))
-            diff_joints_3d = joints_3d_pred - true_joints_3d
-            diff_joints_3d = diff_joints_3d.reshape((diff_joints_3d.shape[0] * diff_joints_3d.shape[1],
-                                                     diff_joints_3d.shape[2]))
-            diff_joints_2d = joints_2d_pred - true_joints_2d
-            diff_joints_2d = diff_joints_2d.reshape((diff_joints_2d.shape[0] * diff_joints_2d.shape[1],
-                                                     diff_joints_2d.shape[2]))
-            distance_train_mano += torch.mean(torch.norm(diff_mano, dim=1))
-            distance_train_3d += torch.mean(torch.norm(diff_joints_3d, dim=1))
-            distance_train_2d += torch.mean(torch.norm(diff_joints_2d, dim=1))
 
             # backward propagation
             optimizer.zero_grad()
@@ -204,7 +209,8 @@ def train_net(net, device, epochs=1000, save_cp=True, checkpoint=None):
         distance_valid_mano /= iters_val
         distance_valid_3d /= iters_val
         distance_valid_2d /= iters_val
-        scheduler.step(loss_valid)
+
+        scheduler.step()
 
         # log to TensorBoard
         writer.add_scalar('train loss total', loss_train, epoch)
@@ -269,7 +275,7 @@ def train_net(net, device, epochs=1000, save_cp=True, checkpoint=None):
 def get_args():
     parser = argparse.ArgumentParser(description='Train the UNet on LNES',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('-e', '--epochs', metavar='E', type=int, default=1000,
+    parser.add_argument('-e', '--epochs', metavar='E', type=int, default=100,
                         help='Number of maximum epochs', dest='epochs')
     parser.add_argument('-f', '--load', dest='load', type=str, default=False,
                         help='Load model from a .pth file')
