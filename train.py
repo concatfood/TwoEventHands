@@ -10,7 +10,6 @@ from tqdm import tqdm
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from utils.dataset import BasicDataset
-from utils.huberloss import HuberLoss
 from TEHNet import TEHNet
 
 
@@ -26,7 +25,7 @@ res = (240, 180)
 l_lnes = 200
 
 # percentage of data used for training
-percentage_scale = 0.01
+percentage_scale = 1.0
 percentage_data = 0.005 * percentage_scale
 
 # optimization parameters
@@ -34,7 +33,6 @@ batch_size = 64
 learning_rate = 0.001
 patience = int(round(5 / percentage_scale))
 step_size = int(round(2 / percentage_scale))
-# weight_decay = 0.01
 weight_decay = 0.0
 
 # weights
@@ -42,11 +40,9 @@ weight_mano = 1.0
 weight_rot = 1.0
 weight_trans = 500
 weight_3d = weight_trans
-# weight_2d = 0.0
-weight_2d = 0.004602373**2 * weight_3d
+weight_2d = 0.0
 weights_mano = torch.cat((weight_rot * torch.ones(96), weight_trans * torch.ones(3),
                           weight_rot * torch.ones(96), weight_trans * torch.ones(3))).cuda()
-# threshold_2d = 10.0
 
 
 # training function
@@ -101,8 +97,6 @@ def train_net(net, device, epochs=100, save_cp=True, checkpoint=None):
       Learning rate:   {lr}
       Device:          {device.type}
     ''')
-
-    # huberloss_2d = HuberLoss(delta=threshold_2d)
 
     n_train = len(train_loader)
     n_val = len(val_loader)
@@ -164,17 +158,12 @@ def train_net(net, device, epochs=100, save_cp=True, checkpoint=None):
 
             norm_squared_mano = 0.5 * norm_mano.pow(2)
             norm_squared_joints_3d = 0.5 * norm_joints_3d.pow(2)
-            # norm_squared_joints_2d = 0.5 * norm_joints_2d.pow(2)
+            norm_squared_joints_2d = 0.5 * norm_joints_2d.pow(2)
             loss_mano = torch.mean(norm_squared_mano)
             loss_3d = torch.mean(norm_squared_joints_3d)
-            # loss_2d = torch.mean(norm_squared_joints_2d)
-            loss_2d = torch.mean(norm_joints_2d)
-            # loss_2d = huberloss_2d(norm_joints_2d)
+            loss_2d = torch.mean(norm_squared_joints_2d)
 
-            weight_2d_by_epoch = weight_2d if epoch >= 10 else 0.0
-
-            # loss_total = weight_mano * loss_mano + weight_3d * loss_3d + weight_2d * loss_2d
-            loss_total = weight_mano * loss_mano + weight_3d * loss_3d + weight_2d_by_epoch * loss_2d
+            loss_total = weight_mano * loss_mano + weight_3d * loss_3d + weight_2d * loss_2d
 
             loss_train += loss_total.item()
             loss_train_mano += loss_mano.item()
