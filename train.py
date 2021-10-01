@@ -25,12 +25,12 @@ res = (240, 180)
 l_lnes = 200
 
 # percentage of data used for training
-percentage_scale = 1.0
+percentage_scale = 0.1
 percentage_data = 0.005 * percentage_scale
 
 # optimization parameters
 batch_size = 64
-learning_rate = 0.001
+learning_rate = 0.0001
 patience = int(round(5 / percentage_scale))
 step_size = int(round(2 / percentage_scale))
 weight_decay = 0.0
@@ -38,7 +38,7 @@ weight_decay = 0.0
 # weights
 weight_mano = 1.0
 weight_rot = 1.0
-weight_trans = 500
+weight_trans = 100.0
 weight_3d = weight_trans
 weight_2d = 0.0
 weights_mano = torch.cat((weight_rot * torch.ones(96), weight_trans * torch.ones(3),
@@ -148,7 +148,6 @@ def train_net(net, device, epochs=100, save_cp=True, checkpoint=None):
             diff_joints_2d = joints_2d_pred - true_joints_2d
             diff_joints_2d = diff_joints_2d.reshape((-1, diff_joints_2d.shape[2]))
 
-            # norm_mano = torch.norm(diff_mano, dim=1)
             norm_mano = torch.abs(diff_mano)
             norm_joints_3d = torch.norm(diff_joints_3d, dim=1)
             norm_joints_2d = torch.norm(diff_joints_2d, dim=1)
@@ -264,10 +263,9 @@ def train_net(net, device, epochs=100, save_cp=True, checkpoint=None):
 def get_args():
     parser = argparse.ArgumentParser(description='Train the UNet on LNES',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('-e', '--epochs', metavar='E', type=int, default=100,
-                        help='Number of maximum epochs', dest='epochs')
-    parser.add_argument('-f', '--load', dest='load', type=str, default=False,
-                        help='Load model from a .pth file')
+    parser.add_argument('-e', '--epochs', metavar='E', type=int, default=100, help='Number of maximum epochs',
+                        dest='epochs')
+    parser.add_argument('-f', '--load', dest='load', type=str, default=False, help='Load model from a .pth file')
 
     return parser.parse_args()
 

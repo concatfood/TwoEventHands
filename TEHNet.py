@@ -11,7 +11,6 @@ import torch.nn as nn
 
 # camera parameters
 res = (240, 180)
-far = 1.0
 fov = 45.0
 fovy = np.radians(fov)
 focal = 0.5 * res[1] / math.tan(fovy / 2.0)

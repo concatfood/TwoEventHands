@@ -43,7 +43,6 @@ def eval_net(net, loader, device, epoch):
         diff_joints_2d = joints_2d_pred - true_joints_2d
         diff_joints_2d = diff_joints_2d.reshape((-1, diff_joints_2d.shape[2]))
 
-        # norm_mano = torch.norm(diff_mano, dim=1)
         norm_mano = torch.abs(diff_mano)
         norm_joints_3d = torch.norm(diff_joints_3d, dim=1)
         norm_joints_2d = torch.norm(diff_joints_2d, dim=1)
