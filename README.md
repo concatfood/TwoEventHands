@@ -18,19 +18,17 @@ Requirements include but are not limited to:
 ### Training
 To train on all test sequences in the data directory:
 
-`python train.py -b <BATCH SIZE> -s <SCALE>`
+`python train.py -e <MAX EPOCHS> -l <load>`
 
 ### Prediction
 To predict a single image:
 
-`python predict.py -m <MODEL> -s <SCALE> -i <SEQUENCE> -f <FRAME>`
+`python predict.py -m <MODEL> -i <SEQUENCE> -g <GROUND TRUTH>`
 
-To predict multiple images:
-
-`python predict_all.py -m <MODEL> -s <SCALE> -i <DIRECTORY OF SEQUENCES>`
+Ground truth is optional.
 
 ## Notes on parameters and hardware
 
-The scale is typically set to 1 and the batch size to 16.
+The scale is typically set to 1 and the batch size to 64.
 
 We use a Geforce GTX 1080 to train the model.

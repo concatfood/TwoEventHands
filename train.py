@@ -265,7 +265,7 @@ def get_args():
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('-e', '--epochs', metavar='E', type=int, default=100, help='Number of maximum epochs',
                         dest='epochs')
-    parser.add_argument('-f', '--load', dest='load', type=str, default=False, help='Load model from a .pth file')
+    parser.add_argument('-m', '--model', dest='model', type=str, default=False, help='Load model from a .pth file')
 
     return parser.parse_args()
 
@@ -280,11 +280,11 @@ if __name__ == '__main__':
     net = TEHNet()
     checkpoint = None
 
-    if args.load:
+    if args.model:
         checkpoint = torch.load(os.path.join(dir_checkpoint, args.model), map_location=device)
 
         net.load_state_dict(checkpoint['model'])
-        logging.info(f'Checkpoint loaded from {args.load}')
+        logging.info(f'Checkpoint loaded from {args.model}')
 
     net.to(device=device)
     # net = nn.DataParallel(net)
