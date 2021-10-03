@@ -48,6 +48,11 @@ angles_augmentation = {'0': 5.0 / 360.0 * (2.0 * math.pi), '1': 10.0 / 360.0 * (
 angles_position = {'0': None, '1': 45.0 / 360.0 * (2 * math.pi), '2': 135.0 / 360.0 * (2 * math.pi),
                    '3': 225.0 / 360.0 * (2 * math.pi), '4': 315.0 / 360.0 * (2 * math.pi)}
 
+# lnes augmentation parameters
+percentage_polarity_changes = 0.05
+percentage_noisy_pixels_n = 0.01
+percentage_noisy_pixels_p = 0.01
+
 
 # dataset loader
 class BasicDataset(Dataset):
@@ -157,6 +162,38 @@ class BasicDataset(Dataset):
 
         return lnes
 
+    # convert events to LNES frames
+    @classmethod
+    def preprocess_events_noisy(cls, frames, f_start, size):
+        num_pixels_total = size[0] * size[1]
+        lnes = np.zeros((2, size[1], size[0]))
+
+        num_pixels_polarity_changes = int(round(num_pixels_total * percentage_polarity_changes))
+        xs_polarity_changes = np.random.randint(low=0, high=size[0], size=num_pixels_polarity_changes)
+        ys_polarity_changes = np.random.randint(low=0, high=size[1], size=num_pixels_polarity_changes)
+
+        for t in range(len(frames)):
+            ts, xs, ys, ps = frames[t]['t'], frames[t]['x'].astype(int), frames[t]['y'].astype(int),\
+                             frames[t]['p'].astype(int)
+            lnes[ps, ys, xs] = (ts - f_start) / len(frames)
+            lnes[:, ys_polarity_changes, xs_polarity_changes] = lnes[::-1, ys_polarity_changes, xs_polarity_changes]
+
+        num_pixels_noisy_n = int(round(num_pixels_total * percentage_noisy_pixels_n))
+        num_pixels_noisy_p = int(round(num_pixels_total * percentage_noisy_pixels_p))
+
+        xs_noisy_n = np.random.randint(low=0, high=size[0], size=num_pixels_noisy_n)
+        ys_noisy_n = np.random.randint(low=0, high=size[1], size=num_pixels_noisy_n)
+        xs_noisy_p = np.random.randint(low=0, high=size[0], size=num_pixels_noisy_p)
+        ys_noisy_p = np.random.randint(low=0, high=size[1], size=num_pixels_noisy_p)
+
+        noise_n_full = np.random.rand(size[1], size[0])
+        noise_p_full = np.random.rand(size[1], size[0])
+
+        lnes[0, ys_noisy_n, xs_noisy_n] = noise_n_full[ys_noisy_n, xs_noisy_n]
+        lnes[1, ys_noisy_p, xs_noisy_p] = noise_p_full[ys_noisy_p, xs_noisy_p]
+
+        return lnes
+
     # convert mask images to PyTorch masks
     @classmethod
     def preprocess_mask(cls, img):
@@ -245,8 +282,17 @@ class BasicDataset(Dataset):
         aa = split_directory_noprefix[1]
         ap = split_directory_noprefix[2]
 
+        l_lnes_lb = 0.3 * self.l_lnes
+        l_lnes_ub = 3.0 * self.l_lnes
+
+        def log_uniform_int(a, b):
+            l = np.random.uniform(np.log(a), np.log(b))
+            return int(round(np.exp(l)))
+
+        l_lnes_aug = max(1, log_uniform_int(l_lnes_lb, l_lnes_ub))
+
         f = idx - self.len_until[n]
-        f_start = max(0, f - self.l_lnes + 1)
+        f_start = max(0, f - l_lnes_aug + 1)
         f_finish = min(f + 1, self.num_frames[n])
 
         offset_start = f_start % interval
@@ -281,7 +327,7 @@ class BasicDataset(Dataset):
                 frames_events_next = pickle.load(file)[:offset_finish]
                 frames_events.extend(frames_events_next)
 
-        lnes = self.preprocess_events(frames_events, f - self.l_lnes + 1, self.res)
+        lnes = self.preprocess_events_noisy(frames_events, f - len(frames_events) + 1, self.res)
 
         file_mano = os.path.join(self.mano_dir, prefix_dataset + name,
                                  str(f // interval).zfill(len_digits_interval) + '.pkl')
