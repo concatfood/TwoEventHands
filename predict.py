@@ -1,4 +1,5 @@
 import argparse
+import cv2 as cv
 import math
 import numpy as np
 import os
@@ -10,6 +11,7 @@ from pytorch3d.transforms import rotation_6d_to_matrix
 from TEHNet import TEHNet
 from tqdm import tqdm
 import torch
+import torch.nn.functional as F
 from utils.dataset import BasicDataset
 from utils.one_euro_filter import OneEuroFilter
 
@@ -86,7 +88,7 @@ def load_mano(name_gt):
     return frames_mano_total
 
 
-# predict segmentation mask and MANO parameters
+# predict and MANO parameters
 def predict(net, lnes, device, t, mano_gt):
     global one_euro_filter
 
@@ -116,11 +118,16 @@ def predict(net, lnes, device, t, mano_gt):
     lnes = lnes.to(device=device, dtype=torch.float32)
 
     with torch.no_grad():
-        mano_output, joints_3d_output, joints_2d_output = net(lnes)
+        mano_output, mask_output, joints_3d_output, joints_2d_output = net(lnes)
         params = mano_output.squeeze(0)
+        mask_output = mask_output.squeeze(0)
+        mask_output = F.softmax(mask_output, dim=0)
         joints_3d_output = joints_3d_output.squeeze(0)
         joints_2d_output = joints_2d_output.squeeze(0)
         params = params.cpu().numpy()
+        mask_output = mask_output.cpu().numpy()
+        indices_max = np.argmax(mask_output, axis=0)
+        mask_output = 255 * (np.arange(3) == indices_max[..., None]).astype(int)
         joints_3d_output = joints_3d_output.cpu().numpy()
         joints_2d_output = joints_2d_output.cpu().numpy()
 
@@ -161,7 +168,7 @@ def predict(net, lnes, device, t, mano_gt):
     joints_3d_smoothed = torch.unsqueeze(joints_3d_smoothed, 0).cpu().numpy()
     joints_2d_smoothed = torch.unsqueeze(joints_2d_smoothed, 0).cpu().numpy()
 
-    out_net = (params_axisangle, joints_3d_output, joints_2d_output)
+    out_net = (params_axisangle, joints_3d_output, joints_2d_output, mask_output)
     out_smoothed = (params_axisangle_smoothed, joints_3d_smoothed, joints_2d_smoothed)
     out_gt = (mano_gt, joints_3d_gt, joints_2d_gt)
 
@@ -170,7 +177,7 @@ def predict(net, lnes, device, t, mano_gt):
 
 # parse arguments
 def get_args():
-    parser = argparse.ArgumentParser(description='Predict mask from input images',
+    parser = argparse.ArgumentParser(description='Predict mano parameters from input images',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--model', '-m', default='best.pth', metavar='FILE',
                         help="Specify the file in which the model is stored")
@@ -195,6 +202,8 @@ if __name__ == "__main__":
     net.to(device=device)
     net.load_state_dict(torch.load(os.path.join('checkpoints', args.model), map_location=device)['model'])
 
+    Path(os.path.join(dir_output, name_sequence, 'masks')).mkdir(parents=True, exist_ok=True)
+
     mano_pred_seq = {}
     mano_pred_seq_smoothed = {}
 
@@ -211,7 +220,7 @@ if __name__ == "__main__":
         frames = events[max(0, f - l_lnes + 1):f + 1]
         lnes = BasicDataset.preprocess_events(frames, f - l_lnes + 1, res)
         out_net, out_smoothed, out_gt = predict(net=net, lnes=lnes, device=device, t=f / 1000, mano_gt=mano_gt_f)
-        mano_pred, joints_3d_pred, joints_2d_pred = out_net
+        mano_pred, joints_3d_pred, joints_2d_pred, mask_out = out_net
         mano_pred_smoothed, joints_3d_pred_smoothed, joints_2d_pred_smoothed = out_smoothed
         mano_gt, joints_3d_gt, joints_2d_gt = out_gt
 
@@ -241,6 +250,10 @@ if __name__ == "__main__":
             distance_joints_3d_smoothed += evaluate_l2(joints_3d_pred_smoothed, joints_3d_gt)
             distance_joints_2d += evaluate_l2(joints_2d_pred, joints_2d_gt)
             distance_joints_2d_smoothed += evaluate_l2(joints_2d_pred_smoothed, joints_2d_gt)
+
+        cv.imwrite(os.path.join(dir_output, name_sequence, 'masks',
+                                str(i_f + 1).zfill(len(str(int(round(len(events) * fps_out / fps_in)) - 1)))) + '.png',
+                   mask_out[:, :, ::-1])
 
     if mano_gt_all is not None:
         num_iterations = int(math.floor(len(events) * fps_out / fps_in))

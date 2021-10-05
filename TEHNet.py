@@ -7,6 +7,7 @@ from pytorch3d.transforms import rotation_6d_to_matrix
 from resnet50 import ResNet
 import torch
 import torch.nn as nn
+from unet import UNet
 
 
 # camera parameters
@@ -25,13 +26,16 @@ class TEHNet(nn.Module):
         super(TEHNet, self).__init__()
 
         self.resnet = ResNet()
+        self.unet = UNet()
         self.layer_mano_right = ManoLayer(flat_hand_mean=True, side='right', mano_root='mano', use_pca=False,
                                           root_rot_mode='axisang', joint_rot_mode='axisang')
         self.layer_mano_left = ManoLayer(flat_hand_mean=True, side='left', mano_root='mano', use_pca=False,
                                          root_rot_mode='axisang', joint_rot_mode='axisang')
 
     def forward(self, x):
-        mano_params = self.resnet(x)
+        masks = self.unet(x)
+        x_masked = torch.cat((x, masks), 1)
+        mano_params = self.resnet(x_masked)
 
         # quaternion to axis-angle
         mano_rots_6d_right = mano_params[:, 0:96].reshape(-1, 16, 6)
@@ -53,4 +57,4 @@ class TEHNet(nn.Module):
         joints_intrinsic = torch.matmul(joints_3d, torch.transpose(mat_cam, 0, 1))
         joints_2d = joints_intrinsic[..., 0:2] / joints_intrinsic[..., [2]]
 
-        return mano_params, joints_3d, joints_2d
+        return mano_params, masks, joints_3d, joints_2d

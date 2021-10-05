@@ -56,9 +56,10 @@ percentage_noisy_pixels_p = 0.01
 
 # dataset loader
 class BasicDataset(Dataset):
-    def __init__(self, events_dir, mano_dir, res, l_lnes):
+    def __init__(self, events_dir, mano_dir, mask_dir, res, l_lnes):
         self.events_dir = events_dir
         self.mano_dir = mano_dir
+        self.mask_dir = mask_dir
         self.res = res
         self.l_lnes = l_lnes
         self.num_frames = []
@@ -300,7 +301,8 @@ class BasicDataset(Dataset):
         i_file_start = f_start // interval
         i_file_finish = f_finish // interval
 
-        len_digits_interval = len(str((self.num_frames[n] - 1) // interval))    # 3
+        len_digits_interval = len(str((self.num_frames[n] - 1) // interval))
+        len_digits_interval_masks = len(str((self.num_frames[n] - 1) // interval_masks))
 
         # start file
         file_events_start = os.path.join(self.events_dir, prefix_dataset + name + '_' + aa + '_' + ap,
@@ -336,13 +338,22 @@ class BasicDataset(Dataset):
             frame_mano = pickle.load(file)[f]
 
         mano_params = self.preprocess_mano(frame_mano, aa, ap, self.roots)
-        vertices, joints_3d = self.compute_vertices_and_joints(mano_params, self.layer_mano_right, self.layer_mano_left)
 
+        file_mask = os.path.join(self.mask_dir, prefix_dataset + name + '_' + aa + '_' + ap,
+                                 str(f // interval_masks).zfill(len_digits_interval_masks) + '.npz')
+
+        with np.load(file_mask) as data:
+            masks = data['arr_0'][f % interval_masks]
+
+        masks = self.preprocess_mask(masks)
+
+        vertices, joints_3d = self.compute_vertices_and_joints(mano_params, self.layer_mano_right, self.layer_mano_left)
         joints_2d = self.project_vertices(joints_3d, mat_cam)
 
         return {
             'lnes': torch.from_numpy(lnes).type(torch.FloatTensor),
             'mano': torch.from_numpy(mano_params).type(torch.FloatTensor),
+            'masks': torch.from_numpy(masks).type(torch.FloatTensor),
             'joints_3d': torch.from_numpy(joints_3d).type(torch.FloatTensor),
             'joints_2d': torch.from_numpy(joints_2d).type(torch.FloatTensor)
         }

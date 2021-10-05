@@ -18,9 +18,7 @@ Requirements include but are not limited to:
 ### Training
 To train on all test sequences in the data directory:
 
-`python train.py -e <MAX EPOCHS> -m <MODEL>`
-
-Number of epochs and model are optional.
+`python train.py -m <MODEL>`
 
 ### Prediction
 To predict a single image:

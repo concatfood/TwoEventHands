@@ -5,6 +5,7 @@ import numpy as np
 import os
 from shutil import copyfile
 import torch
+import torch.nn as nn
 from torch import optim
 from tqdm import tqdm
 from torch.utils.data import DataLoader
@@ -16,6 +17,7 @@ from TEHNet import TEHNet
 # relative directories
 dir_events = os.path.join('data', 'train', 'events')
 dir_mano = os.path.join('data', 'train', 'mano')
+dir_masks = os.path.join('data', 'train', 'masks')
 dir_checkpoint = 'checkpoints'
 
 # resolution
@@ -25,11 +27,12 @@ res = (240, 180)
 l_lnes = 200
 
 # percentage of data used for training
-percentage_scale = 0.1
+percentage_scale = 0.02     # 0.1
 percentage_data = 0.005 * percentage_scale
 
 # optimization parameters
-batch_size = 64
+epochs_max = int(round(100 / percentage_scale))
+batch_size = 16
 learning_rate = 0.0001
 patience = int(round(5 / percentage_scale))
 step_size = int(round(2 / percentage_scale))
@@ -39,16 +42,20 @@ weight_decay = 0.0
 weight_mano = 1.0
 weight_rot = 1.0
 weight_trans = 100.0
+weight_masks = 1.0
 weight_3d = weight_trans
 weight_2d = 0.0
 weights_mano = torch.cat((weight_rot * torch.ones(96), weight_trans * torch.ones(3),
                           weight_rot * torch.ones(96), weight_trans * torch.ones(3))).cuda()
 
+# mask loss
+cross_entropy = nn.CrossEntropyLoss()
+
 
 # training function
-def train_net(net, device, epochs=100, save_cp=True, checkpoint=None):
+def train_net(net, device, save_cp=True, checkpoint=None):
     # setup data loader
-    dataset = BasicDataset(dir_events, dir_mano, res, l_lnes)
+    dataset = BasicDataset(dir_events, dir_mano, dir_masks, res, l_lnes)
 
     # split such that one sequences with all camera angles is both the test and validation dataset
     sequences_all = 8 * 21
@@ -92,7 +99,7 @@ def train_net(net, device, epochs=100, save_cp=True, checkpoint=None):
 
     logging.info(f'''Starting training:
       Start epoch:     {epoch_start}
-      Maximum epochs:  {epochs}
+      Maximum epochs:  {epochs_max}
       Batch size:      {batch_size}
       Learning rate:   {lr}
       Device:          {device.type}
@@ -107,15 +114,16 @@ def train_net(net, device, epochs=100, save_cp=True, checkpoint=None):
     writer = SummaryWriter('runs/TEHNet')
 
     # dataset loop
-    for epoch in range(epoch_start, epochs):
-        loss_train_mano = 0
-        loss_train_3d = 0
-        loss_train_2d = 0
-        loss_train = 0
+    for epoch in range(epoch_start, epochs_max):
+        loss_train_mano = 0.0
+        loss_train_masks = 0.0
+        loss_train_3d = 0.0
+        loss_train_2d = 0.0
+        loss_train = 0.0
 
-        distance_train_mano = 0
-        distance_train_3d = 0
-        distance_train_2d = 0
+        distance_train_mano = 0.0
+        distance_train_3d = 0.0
+        distance_train_2d = 0.0
 
         net.train()
 
@@ -131,16 +139,17 @@ def train_net(net, device, epochs=100, save_cp=True, checkpoint=None):
 
             # load data
             lnes = batch['lnes']
-            true_mano, true_joints_3d, true_joints_2d = batch['mano'], batch['joints_3d'], batch['joints_2d']
+            true_mano, true_masks, true_joints_3d, true_joints_2d\
+                = batch['mano'], batch['masks'], batch['joints_3d'], batch['joints_2d']
 
-            # send to device
             lnes = lnes.to(device=device, dtype=torch.float32)
             true_mano = true_mano.to(device=device, dtype=torch.float32)
+            true_masks = true_masks.to(device=device, dtype=torch.long)
             true_joints_3d = true_joints_3d.to(device=device, dtype=torch.float32)
             true_joints_2d = true_joints_2d.to(device=device, dtype=torch.float32)
 
             # forward and loss computation
-            mano_pred, joints_3d_pred, joints_2d_pred = net(lnes)
+            mano_pred, masks_pred, joints_3d_pred, joints_2d_pred = net(lnes)
 
             diff_mano = weights_mano * (mano_pred - true_mano)
             diff_joints_3d = joints_3d_pred - true_joints_3d
@@ -159,13 +168,16 @@ def train_net(net, device, epochs=100, save_cp=True, checkpoint=None):
             norm_squared_joints_3d = 0.5 * norm_joints_3d.pow(2)
             norm_squared_joints_2d = 0.5 * norm_joints_2d.pow(2)
             loss_mano = torch.mean(norm_squared_mano)
+            loss_masks = cross_entropy(masks_pred, true_masks)
             loss_3d = torch.mean(norm_squared_joints_3d)
             loss_2d = torch.mean(norm_squared_joints_2d)
 
-            loss_total = weight_mano * loss_mano + weight_3d * loss_3d + weight_2d * loss_2d
+            loss_total = weight_mano * loss_mano + weight_masks * loss_masks + weight_3d * loss_3d\
+                         + weight_2d * loss_2d
 
             loss_train += loss_total.item()
             loss_train_mano += loss_mano.item()
+            loss_train_masks += loss_masks.item()
             loss_train_3d += loss_3d.item()
             loss_train_2d += loss_2d.item()
 
@@ -180,6 +192,7 @@ def train_net(net, device, epochs=100, save_cp=True, checkpoint=None):
 
         loss_train /= iters_train
         loss_train_mano /= iters_train
+        loss_train_masks /= iters_train
         loss_train_3d /= iters_train
         loss_train_2d /= iters_train
         distance_train_mano /= iters_train
@@ -188,10 +201,11 @@ def train_net(net, device, epochs=100, save_cp=True, checkpoint=None):
 
         # validation phase
         net.eval()
-        loss_valid, loss_valid_mano, loss_valid_3d, loss_valid_2d, distance_valid_mano, distance_valid_3d,\
-        distance_valid_2d = eval_net(net, val_loader, device, epoch)
+        loss_valid, loss_valid_mano, loss_valid_masks, loss_valid_3d, loss_valid_2d, distance_valid_mano,\
+        distance_valid_3d, distance_valid_2d = eval_net(net, val_loader, device, epoch, iters_val)
         loss_valid /= iters_val
         loss_valid_mano /= iters_val
+        loss_valid_masks /= iters_val
         loss_valid_3d /= iters_val
         loss_valid_2d /= iters_val
         distance_valid_mano /= iters_val
@@ -203,6 +217,7 @@ def train_net(net, device, epochs=100, save_cp=True, checkpoint=None):
         # log to TensorBoard
         writer.add_scalar('train loss total', loss_train, epoch)
         writer.add_scalar('train loss mano', loss_train_mano, epoch)
+        writer.add_scalar('train loss masks', loss_train_masks, epoch)
         writer.add_scalar('train loss 3d', loss_train_3d, epoch)
         writer.add_scalar('train loss 2d', loss_train_2d, epoch)
         writer.add_scalar('train distance mano', distance_train_mano, epoch)
@@ -211,6 +226,7 @@ def train_net(net, device, epochs=100, save_cp=True, checkpoint=None):
 
         writer.add_scalar('valid loss total', loss_valid, epoch)
         writer.add_scalar('valid loss mano', loss_valid_mano, epoch)
+        writer.add_scalar('valid loss masks', loss_valid_masks, epoch)
         writer.add_scalar('valid loss 3d', loss_valid_3d, epoch)
         writer.add_scalar('valid loss 2d', loss_valid_2d, epoch)
         writer.add_scalar('valid distance mano', distance_valid_mano, epoch)
@@ -263,8 +279,6 @@ def train_net(net, device, epochs=100, save_cp=True, checkpoint=None):
 def get_args():
     parser = argparse.ArgumentParser(description='Train the UNet on LNES',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('-e', '--epochs', metavar='E', type=int, default=100, help='Number of maximum epochs',
-                        dest='epochs')
     parser.add_argument('-m', '--model', dest='model', type=str, default=False, help='Load model from a .pth file')
 
     return parser.parse_args()
@@ -289,4 +303,4 @@ if __name__ == '__main__':
     net.to(device=device)
     # net = nn.DataParallel(net)
 
-    train_net(net=net, device=device, epochs=args.epochs, checkpoint=checkpoint)
+    train_net(net=net, device=device, checkpoint=checkpoint)
