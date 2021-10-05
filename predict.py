@@ -251,9 +251,9 @@ if __name__ == "__main__":
             distance_joints_2d += evaluate_l2(joints_2d_pred, joints_2d_gt)
             distance_joints_2d_smoothed += evaluate_l2(joints_2d_pred_smoothed, joints_2d_gt)
 
-        cv.imwrite(os.path.join(dir_output, name_sequence, 'masks',
-                                str(i_f + 1).zfill(len(str(int(round(len(events) * fps_out / fps_in)) - 1)))) + '.png',
-                   mask_out[:, :, ::-1])
+        cv.imwrite(os.path.join(dir_output, name_sequence, 'masks', 'frame_'
+                                + str(i_f + 1).zfill(len(str(int(round(len(events) * fps_out / fps_in)) - 1))))
+                   + '.png', mask_out[:, :, ::-1])
 
     if mano_gt_all is not None:
         num_iterations = int(math.floor(len(events) * fps_out / fps_in))
