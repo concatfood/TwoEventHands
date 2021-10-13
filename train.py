@@ -1,11 +1,13 @@
 import argparse
 from eval import eval_net
 import logging
+from mesh_intersection.bvh_search_tree import BVH
+import mesh_intersection.loss as collisions_loss
 import numpy as np
 import os
 from shutil import copyfile
 import torch
-import torch.nn as nn
+# import torch.nn as nn
 from torch import optim
 from tqdm import tqdm
 from torch.utils.data import DataLoader
@@ -27,12 +29,12 @@ res = (240, 180)
 l_lnes = 200
 
 # percentage of data used for training
-percentage_scale = 0.02     # 0.1
+percentage_scale = 1.0
 percentage_data = 0.005 * percentage_scale
 
 # optimization parameters
 epochs_max = int(round(100 / percentage_scale))
-batch_size = 16
+batch_size = 64
 learning_rate = 0.0001
 patience = int(round(5 / percentage_scale))
 step_size = int(round(2 / percentage_scale))
@@ -42,14 +44,18 @@ weight_decay = 0.0
 weight_mano = 1.0
 weight_rot = 1.0
 weight_trans = 100.0
-weight_masks = 1.0
+# weight_masks = 1.0
 weight_3d = weight_trans
 weight_2d = 0.0
+weight_pen = 1.0
 weights_mano = torch.cat((weight_rot * torch.ones(96), weight_trans * torch.ones(3),
                           weight_rot * torch.ones(96), weight_trans * torch.ones(3))).cuda()
+max_collisions = 32     # for BVH search tree
 
-# mask loss
-cross_entropy = nn.CrossEntropyLoss()
+# additional losses
+# cross_entropy = nn.CrossEntropyLoss()
+pen_distance = collisions_loss.DistanceFieldPenetrationLoss(sigma=0.5, point2plane=False, vectorized=True,
+                                                            penalize_outside=True, linear_max=1000)
 
 
 # training function
@@ -116,9 +122,10 @@ def train_net(net, device, save_cp=True, checkpoint=None):
     # dataset loop
     for epoch in range(epoch_start, epochs_max):
         loss_train_mano = 0.0
-        loss_train_masks = 0.0
+        # loss_train_masks = 0.0
         loss_train_3d = 0.0
         loss_train_2d = 0.0
+        loss_train_pen = 0.0
         loss_train = 0.0
 
         distance_train_mano = 0.0
@@ -139,17 +146,25 @@ def train_net(net, device, save_cp=True, checkpoint=None):
 
             # load data
             lnes = batch['lnes']
-            true_mano, true_masks, true_joints_3d, true_joints_2d\
-                = batch['mano'], batch['masks'], batch['joints_3d'], batch['joints_2d']
+            # true_mano, true_masks, true_joints_3d, true_joints_2d\
+            #     = batch['mano'], batch['masks'], batch['joints_3d'], batch['joints_2d']
+            true_mano, true_joints_3d, true_joints_2d = batch['mano'], batch['joints_3d'], batch['joints_2d']
 
             lnes = lnes.to(device=device, dtype=torch.float32)
             true_mano = true_mano.to(device=device, dtype=torch.float32)
-            true_masks = true_masks.to(device=device, dtype=torch.long)
+            # true_masks = true_masks.to(device=device, dtype=torch.long)
             true_joints_3d = true_joints_3d.to(device=device, dtype=torch.float32)
             true_joints_2d = true_joints_2d.to(device=device, dtype=torch.float32)
 
             # forward and loss computation
-            mano_pred, masks_pred, joints_3d_pred, joints_2d_pred = net(lnes)
+            # mano_pred, vertices, masks_pred, joints_3d_pred, joints_2d_pred = net(lnes)
+            mano_pred, verts, joints_3d_pred, joints_2d_pred = net(lnes)
+
+            triangles = verts[:, dataset.faces]
+            search_tree = BVH(max_collisions=max_collisions)
+
+            with torch.no_grad():
+                collision_idxs = search_tree(triangles)
 
             diff_mano = weights_mano * (mano_pred - true_mano)
             diff_joints_3d = joints_3d_pred - true_joints_3d
@@ -168,18 +183,21 @@ def train_net(net, device, save_cp=True, checkpoint=None):
             norm_squared_joints_3d = 0.5 * norm_joints_3d.pow(2)
             norm_squared_joints_2d = 0.5 * norm_joints_2d.pow(2)
             loss_mano = torch.mean(norm_squared_mano)
-            loss_masks = cross_entropy(masks_pred, true_masks)
+            # loss_masks = cross_entropy(masks_pred, true_masks)
             loss_3d = torch.mean(norm_squared_joints_3d)
             loss_2d = torch.mean(norm_squared_joints_2d)
+            loss_pen = torch.mean(pen_distance(triangles, collision_idxs))
 
-            loss_total = weight_mano * loss_mano + weight_masks * loss_masks + weight_3d * loss_3d\
-                         + weight_2d * loss_2d
+            # loss_total = weight_mano * loss_mano + weight_masks * loss_masks + weight_3d * loss_3d\
+            #              + weight_2d * loss_2d + weight_pen * loss_pen
+            loss_total = weight_mano * loss_mano + weight_3d * loss_3d + weight_2d * loss_2d + weight_pen * loss_pen
 
             loss_train += loss_total.item()
             loss_train_mano += loss_mano.item()
-            loss_train_masks += loss_masks.item()
+            # loss_train_masks += loss_masks.item()
             loss_train_3d += loss_3d.item()
             loss_train_2d += loss_2d.item()
+            loss_train_pen += loss_pen.item()
 
             # backward propagation
             optimizer.zero_grad()
@@ -192,22 +210,26 @@ def train_net(net, device, save_cp=True, checkpoint=None):
 
         loss_train /= iters_train
         loss_train_mano /= iters_train
-        loss_train_masks /= iters_train
+        # loss_train_masks /= iters_train
         loss_train_3d /= iters_train
         loss_train_2d /= iters_train
+        loss_train_pen /= iters_train
         distance_train_mano /= iters_train
         distance_train_3d /= iters_train
         distance_train_2d /= iters_train
 
         # validation phase
         net.eval()
-        loss_valid, loss_valid_mano, loss_valid_masks, loss_valid_3d, loss_valid_2d, distance_valid_mano,\
-        distance_valid_3d, distance_valid_2d = eval_net(net, val_loader, device, epoch, iters_val)
+        # loss_valid, loss_valid_mano, loss_valid_masks, loss_valid_3d, loss_valid_2d, distance_valid_mano,\
+        # distance_valid_3d, distance_valid_2d = eval_net(net, val_loader, device, epoch, iters_val)
+        loss_valid, loss_valid_mano, loss_valid_3d, loss_valid_2d, loss_valid_pen, distance_valid_mano,\
+        distance_valid_3d, distance_valid_2d = eval_net(net, dataset, val_loader, device, epoch, iters_val)
         loss_valid /= iters_val
         loss_valid_mano /= iters_val
-        loss_valid_masks /= iters_val
+        # loss_valid_masks /= iters_val
         loss_valid_3d /= iters_val
         loss_valid_2d /= iters_val
+        loss_valid_pen /= iters_val
         distance_valid_mano /= iters_val
         distance_valid_3d /= iters_val
         distance_valid_2d /= iters_val
@@ -217,18 +239,20 @@ def train_net(net, device, save_cp=True, checkpoint=None):
         # log to TensorBoard
         writer.add_scalar('train loss total', loss_train, epoch)
         writer.add_scalar('train loss mano', loss_train_mano, epoch)
-        writer.add_scalar('train loss masks', loss_train_masks, epoch)
+        # writer.add_scalar('train loss masks', loss_train_masks, epoch)
         writer.add_scalar('train loss 3d', loss_train_3d, epoch)
         writer.add_scalar('train loss 2d', loss_train_2d, epoch)
+        writer.add_scalar('train loss pen', loss_train_pen, epoch)
         writer.add_scalar('train distance mano', distance_train_mano, epoch)
         writer.add_scalar('train distance 3d', distance_train_3d, epoch)
         writer.add_scalar('train distance 2d', distance_train_2d, epoch)
 
         writer.add_scalar('valid loss total', loss_valid, epoch)
         writer.add_scalar('valid loss mano', loss_valid_mano, epoch)
-        writer.add_scalar('valid loss masks', loss_valid_masks, epoch)
+        # writer.add_scalar('valid loss masks', loss_valid_masks, epoch)
         writer.add_scalar('valid loss 3d', loss_valid_3d, epoch)
         writer.add_scalar('valid loss 2d', loss_valid_2d, epoch)
+        writer.add_scalar('valid loss pen', loss_valid_pen, epoch)
         writer.add_scalar('valid distance mano', distance_valid_mano, epoch)
         writer.add_scalar('valid distance 3d', distance_valid_3d, epoch)
         writer.add_scalar('valid distance 2d', distance_valid_2d, epoch)

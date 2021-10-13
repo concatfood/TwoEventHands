@@ -107,9 +107,12 @@ class BasicDataset(Dataset):
         shape_zero = torch.zeros((1, 10))
         trans_zero = torch.zeros((1, 3))
 
-        _, joints_right = self.layer_mano_right(pose_zero, th_betas=shape_zero, th_trans=trans_zero)
-        _, joints_left = self.layer_mano_left(pose_zero, th_betas=shape_zero, th_trans=trans_zero)
+        vertices_right, joints_right = self.layer_mano_right(pose_zero, th_betas=shape_zero, th_trans=trans_zero)
+        vertices_left, joints_left = self.layer_mano_left(pose_zero, th_betas=shape_zero, th_trans=trans_zero)
         self.roots = [joints_right[0, 0, ...].numpy(), joints_left[0, 0, ...].numpy()]
+
+        self.faces = torch.cat((self.layer_mano_right.th_faces, self.layer_mano_left.th_faces
+                                + vertices_right.shape[1]), 0).to(device='cuda', dtype=torch.int64)
 
         logging.info(f'The dataset contains {len(self.ids)} frames.')
 
@@ -302,7 +305,7 @@ class BasicDataset(Dataset):
         i_file_finish = f_finish // interval
 
         len_digits_interval = len(str((self.num_frames[n] - 1) // interval))
-        len_digits_interval_masks = len(str((self.num_frames[n] - 1) // interval_masks))
+        # len_digits_interval_masks = len(str((self.num_frames[n] - 1) // interval_masks))
 
         # start file
         file_events_start = os.path.join(self.events_dir, prefix_dataset + name + '_' + aa + '_' + ap,
@@ -339,13 +342,13 @@ class BasicDataset(Dataset):
 
         mano_params = self.preprocess_mano(frame_mano, aa, ap, self.roots)
 
-        file_mask = os.path.join(self.mask_dir, prefix_dataset + name + '_' + aa + '_' + ap,
-                                 str(f // interval_masks).zfill(len_digits_interval_masks) + '.npz')
-
-        with np.load(file_mask) as data:
-            masks = data['arr_0'][f % interval_masks]
-
-        masks = self.preprocess_mask(masks)
+        # file_mask = os.path.join(self.mask_dir, prefix_dataset + name + '_' + aa + '_' + ap,
+        #                          str(f // interval_masks).zfill(len_digits_interval_masks) + '.npz')
+        #
+        # with np.load(file_mask) as data:
+        #     masks = data['arr_0'][f % interval_masks]
+        #
+        # masks = self.preprocess_mask(masks)
 
         vertices, joints_3d = self.compute_vertices_and_joints(mano_params, self.layer_mano_right, self.layer_mano_left)
         joints_2d = self.project_vertices(joints_3d, mat_cam)
@@ -353,7 +356,7 @@ class BasicDataset(Dataset):
         return {
             'lnes': torch.from_numpy(lnes).type(torch.FloatTensor),
             'mano': torch.from_numpy(mano_params).type(torch.FloatTensor),
-            'masks': torch.from_numpy(masks).type(torch.FloatTensor),
+            # 'masks': torch.from_numpy(masks).type(torch.FloatTensor),
             'joints_3d': torch.from_numpy(joints_3d).type(torch.FloatTensor),
             'joints_2d': torch.from_numpy(joints_2d).type(torch.FloatTensor)
         }
