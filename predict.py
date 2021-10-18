@@ -204,7 +204,7 @@ if __name__ == "__main__":
     net.to(device=device)
     net.load_state_dict(torch.load(os.path.join('checkpoints', args.model), map_location=device)['model'])
 
-    Path(os.path.join(dir_output, name_sequence, 'masks')).mkdir(parents=True, exist_ok=True)
+    # Path(os.path.join(dir_output, name_sequence, 'masks')).mkdir(parents=True, exist_ok=True)
 
     mano_pred_seq = {}
     mano_pred_seq_smoothed = {}

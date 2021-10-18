@@ -29,15 +29,15 @@ res = (240, 180)
 l_lnes = 200
 
 # percentage of data used for training
-percentage_scale = 1.0
+percentage_scale = 0.1
 percentage_data = 0.005 * percentage_scale
 
 # optimization parameters
 epochs_max = int(round(100 / percentage_scale))
 batch_size = 64
 learning_rate = 0.0001
-patience = int(round(5 / percentage_scale))
-step_size = int(round(2 / percentage_scale))
+patience = int(round(20 / percentage_scale))
+step_size = int(round(10 / percentage_scale))
 weight_decay = 0.0
 
 # weights
@@ -47,15 +47,18 @@ weight_trans = 100.0
 # weight_masks = 1.0
 weight_3d = weight_trans
 weight_2d = 0.0
-weight_pen = 1.0
+weight_pen = 0.0001
 weights_mano = torch.cat((weight_rot * torch.ones(96), weight_trans * torch.ones(3),
                           weight_rot * torch.ones(96), weight_trans * torch.ones(3))).cuda()
-max_collisions = 32     # for BVH search tree
+linear_max = 0.005          # for distance field penetration loss
+penalize_outside = False    # for distance field penetration loss
+sigma = 0.005               # for distance field penetration loss
+max_collisions = 32         # for BVH search tree
 
 # additional losses
 # cross_entropy = nn.CrossEntropyLoss()
-pen_distance = collisions_loss.DistanceFieldPenetrationLoss(sigma=0.5, point2plane=False, vectorized=True,
-                                                            penalize_outside=True, linear_max=1000)
+pen_distance = collisions_loss.DistanceFieldPenetrationLoss(sigma=sigma, point2plane=False, vectorized=True,
+                                                            penalize_outside=penalize_outside, linear_max=linear_max)
 
 
 # training function

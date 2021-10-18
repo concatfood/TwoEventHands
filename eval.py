@@ -12,17 +12,20 @@ weight_rot = 1.0
 weight_trans = 100.0
 weight_3d = weight_trans
 weight_2d = 0.0
-weight_pen = 1.0
+weight_pen = 0.0001
 weights_mano = torch.cat((weight_rot * torch.ones(96), weight_trans * torch.ones(3),
                           weight_rot * torch.ones(96), weight_trans * torch.ones(3))).cuda()
-max_collisions = 32
+linear_max = 0.005          # for distance field penetration loss
+penalize_outside = False    # for distance field penetration loss
+sigma = 0.005               # for distance field penetration loss
+max_collisions = 32         # for BVH search tree
 
 # search tree for penetration loss
 
 # additional losses
 # cross_entropy = nn.CrossEntropyLoss()
-pen_distance = collisions_loss.DistanceFieldPenetrationLoss(sigma=0.5, point2plane=False, vectorized=True,
-                                                            penalize_outside=True, linear_max=1000)
+pen_distance = collisions_loss.DistanceFieldPenetrationLoss(sigma=sigma, point2plane=False, vectorized=True,
+                                                            penalize_outside=penalize_outside, linear_max=linear_max)
 
 
 # evaluate network
