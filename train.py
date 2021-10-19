@@ -30,7 +30,7 @@ l_lnes = 200
 
 # percentage of data used for training
 percentage_scale = 0.1
-percentage_data = 0.005 * percentage_scale
+percentage_data = 0.01 * percentage_scale
 
 # optimization parameters
 epochs_max = int(round(100 / percentage_scale))
@@ -47,7 +47,7 @@ weight_trans = 100.0
 # weight_masks = 1.0
 weight_3d = weight_trans
 weight_2d = 0.0
-weight_pen = 0.0001
+weight_pen = 0.0    # 0.0001
 weights_mano = torch.cat((weight_rot * torch.ones(96), weight_trans * torch.ones(3),
                           weight_rot * torch.ones(96), weight_trans * torch.ones(3))).cuda()
 linear_max = 0.005          # for distance field penetration loss
@@ -67,9 +67,9 @@ def train_net(net, device, save_cp=True, checkpoint=None):
     dataset = BasicDataset(dir_events, dir_mano, dir_masks, res, l_lnes)
 
     # split such that one sequences with all camera angles is both the test and validation dataset
-    sequences_all = 8 * 21
-    sequences_val_start = 6 * 21
-    sequences_val_end = 7 * 21
+    sequences_all = 3 * 21
+    sequences_val_start = 1 * 21
+    sequences_val_end = 2 * 21
     sequences_train = [s for s in list(range(sequences_all)) if not sequences_val_start <= s < sequences_val_end]
     sequences_val = list(range(sequences_val_start, sequences_val_end))
     list_train = [list(range(dataset.len_until[s], dataset.len_until[s + 1])) if s < sequences_all - 1
@@ -131,7 +131,6 @@ def train_net(net, device, save_cp=True, checkpoint=None):
         loss_train_pen = 0.0
         loss_train = 0.0
 
-        distance_train_mano = 0.0
         distance_train_3d = 0.0
         distance_train_2d = 0.0
 
@@ -178,7 +177,6 @@ def train_net(net, device, save_cp=True, checkpoint=None):
             norm_mano = torch.abs(diff_mano)
             norm_joints_3d = torch.norm(diff_joints_3d, dim=1)
             norm_joints_2d = torch.norm(diff_joints_2d, dim=1)
-            distance_train_mano += torch.mean(norm_mano)
             distance_train_3d += torch.mean(norm_joints_3d)
             distance_train_2d += torch.mean(norm_joints_2d)
 
@@ -217,23 +215,21 @@ def train_net(net, device, save_cp=True, checkpoint=None):
         loss_train_3d /= iters_train
         loss_train_2d /= iters_train
         loss_train_pen /= iters_train
-        distance_train_mano /= iters_train
         distance_train_3d /= iters_train
         distance_train_2d /= iters_train
 
         # validation phase
         net.eval()
-        # loss_valid, loss_valid_mano, loss_valid_masks, loss_valid_3d, loss_valid_2d, distance_valid_mano,\
-        # distance_valid_3d, distance_valid_2d = eval_net(net, val_loader, device, epoch, iters_val)
-        loss_valid, loss_valid_mano, loss_valid_3d, loss_valid_2d, loss_valid_pen, distance_valid_mano,\
-        distance_valid_3d, distance_valid_2d = eval_net(net, dataset, val_loader, device, epoch, iters_val)
+        # loss_valid, loss_valid_mano, loss_valid_masks, loss_valid_3d, loss_valid_2d, distance_valid_3d,\
+        #     distance_valid_2d = eval_net(net, val_loader, device, epoch, iters_val)
+        loss_valid, loss_valid_mano, loss_valid_3d, loss_valid_2d, loss_valid_pen, distance_valid_3d, distance_valid_2d\
+            = eval_net(net, dataset, val_loader, device, epoch, iters_val)
         loss_valid /= iters_val
         loss_valid_mano /= iters_val
         # loss_valid_masks /= iters_val
         loss_valid_3d /= iters_val
         loss_valid_2d /= iters_val
         loss_valid_pen /= iters_val
-        distance_valid_mano /= iters_val
         distance_valid_3d /= iters_val
         distance_valid_2d /= iters_val
 
@@ -246,7 +242,6 @@ def train_net(net, device, save_cp=True, checkpoint=None):
         writer.add_scalar('train loss 3d', loss_train_3d, epoch)
         writer.add_scalar('train loss 2d', loss_train_2d, epoch)
         writer.add_scalar('train loss pen', loss_train_pen, epoch)
-        writer.add_scalar('train distance mano', distance_train_mano, epoch)
         writer.add_scalar('train distance 3d', distance_train_3d, epoch)
         writer.add_scalar('train distance 2d', distance_train_2d, epoch)
 
@@ -256,7 +251,6 @@ def train_net(net, device, save_cp=True, checkpoint=None):
         writer.add_scalar('valid loss 3d', loss_valid_3d, epoch)
         writer.add_scalar('valid loss 2d', loss_valid_2d, epoch)
         writer.add_scalar('valid loss pen', loss_valid_pen, epoch)
-        writer.add_scalar('valid distance mano', distance_valid_mano, epoch)
         writer.add_scalar('valid distance 3d', distance_valid_3d, epoch)
         writer.add_scalar('valid distance 2d', distance_valid_2d, epoch)
 

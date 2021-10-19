@@ -12,7 +12,7 @@ weight_rot = 1.0
 weight_trans = 100.0
 weight_3d = weight_trans
 weight_2d = 0.0
-weight_pen = 0.0001
+weight_pen = 0.0    # 0.0001
 weights_mano = torch.cat((weight_rot * torch.ones(96), weight_trans * torch.ones(3),
                           weight_rot * torch.ones(96), weight_trans * torch.ones(3))).cuda()
 linear_max = 0.005          # for distance field penetration loss
@@ -37,7 +37,6 @@ def eval_net(net, dataset, loader, device, epoch, num_it):
     loss_valid_pen = 0.0
     loss_valid = 0.0
 
-    distance_valid_mano = 0.0
     distance_valid_3d = 0.0
     distance_valid_2d = 0.0
 
@@ -74,7 +73,6 @@ def eval_net(net, dataset, loader, device, epoch, num_it):
         norm_mano = torch.abs(diff_mano)
         norm_joints_3d = torch.norm(diff_joints_3d, dim=1)
         norm_joints_2d = torch.norm(diff_joints_2d, dim=1)
-        distance_valid_mano += torch.mean(norm_mano)
         distance_valid_3d += torch.mean(norm_joints_3d)
         distance_valid_2d += torch.mean(norm_joints_2d)
 
@@ -106,7 +104,7 @@ def eval_net(net, dataset, loader, device, epoch, num_it):
 
         # pbar.update()
 
-    # return loss_valid, loss_valid_mano, loss_valid_masks, loss_valid_3d, loss_valid_2d, distance_valid_mano,\
-    #        distance_valid_3d, distance_valid_2d
-    return loss_valid, loss_valid_mano, loss_valid_3d, loss_valid_2d, loss_valid_pen, distance_valid_mano,\
-           distance_valid_3d, distance_valid_2d
+    # return loss_valid, loss_valid_mano, loss_valid_masks, loss_valid_3d, loss_valid_2d, distance_valid_3d,
+    #        distance_valid_2d
+    return loss_valid, loss_valid_mano, loss_valid_3d, loss_valid_2d, loss_valid_pen, distance_valid_3d,\
+           distance_valid_2d
