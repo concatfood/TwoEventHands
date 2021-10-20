@@ -106,7 +106,7 @@ def predict(net, lnes, device, t, mano_gt):
 
     net.eval()
 
-    mano_gt, vertices_gt, joints_3d_gt, joints_2d_gt = None, None, None, None
+    vertices_gt, joints_3d_gt, joints_2d_gt = None, None, None
 
     # compute ground truth joint positions
     if mano_gt is not None:
