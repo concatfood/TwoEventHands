@@ -105,15 +105,15 @@ def load_mano(name_gt):
 def pck2dp_frame(joints_pred, joints_gt, num_steps=100):
     len_palm_right_gt = np.linalg.norm(joints_gt[9, :] - joints_gt[0, :])
     len_palm_left_gt = np.linalg.norm(joints_gt[30, :] - joints_gt[21, :])
-    dists_right_normalized = np.linalg.norm(joints_pred[0:21, :] - joints_gt[0:21, :], axis=1) / len_palm_right_gt
-    dists_left_normalized = np.linalg.norm(joints_pred[21:42, :] - joints_gt[21:42, :], axis=1) / len_palm_left_gt
+    dists_right = np.linalg.norm(joints_pred[0:21, :] - joints_gt[0:21, :], axis=1)
+    dists_left = np.linalg.norm(joints_pred[21:42, :] - joints_gt[21:42, :], axis=1)
     pck = np.zeros(num_steps + 1)
 
     for s in range(num_steps + 1):
         dist_right_s = len_palm_right_gt * s / num_steps
         dist_left_s = len_palm_left_gt * s / num_steps
-        pck[s] += (dists_right_normalized < dist_right_s).sum()
-        pck[s] += (dists_left_normalized < dist_left_s).sum()
+        pck[s] += (dists_right < dist_right_s).sum()
+        pck[s] += (dists_left < dist_left_s).sum()
 
     pck /= 42
 
