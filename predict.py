@@ -11,6 +11,7 @@ import pickle
 from pytorch3d.transforms import matrix_to_quaternion
 from pytorch3d.transforms import quaternion_to_axis_angle
 from pytorch3d.transforms import rotation_6d_to_matrix
+from sklearn import metrics
 from TEHNet import TEHNet
 from tqdm import tqdm
 import torch
@@ -100,6 +101,39 @@ def load_mano(name_gt):
     return frames_mano_total
 
 
+# palm-normalized 2d-pck
+def pck2dp_frame(joints_pred, joints_gt, num_steps=100):
+    len_palm_right_gt = np.linalg.norm(joints_gt[9, :] - joints_gt[0, :])
+    len_palm_left_gt = np.linalg.norm(joints_gt[30, :] - joints_gt[21, :])
+    dists_right_normalized = np.linalg.norm(joints_pred[0:21, :] - joints_gt[0:21, :], axis=1) / len_palm_right_gt
+    dists_left_normalized = np.linalg.norm(joints_pred[21:42, :] - joints_gt[21:42, :], axis=1) / len_palm_left_gt
+    pck = np.zeros(num_steps + 1)
+
+    for s in range(num_steps + 1):
+        dist_right_s = len_palm_right_gt * s / num_steps
+        dist_left_s = len_palm_left_gt * s / num_steps
+        pck[s] += (dists_right_normalized < dist_right_s).sum()
+        pck[s] += (dists_left_normalized < dist_left_s).sum()
+
+    pck /= 42
+
+    return pck
+
+
+# 3d-pck
+def pck3d_frame(joints_pred, joints_gt, num_steps=100, dist_max=0.1):
+    dists = np.linalg.norm(joints_pred - joints_gt, axis=1)
+    pck = np.zeros(num_steps + 1)
+    
+    for s in range(num_steps + 1):
+        dist_s = dist_max * s / num_steps
+        pck[s] += (dists < dist_s).sum()
+
+    pck /= 42
+
+    return pck
+
+
 # predict and MANO parameters
 def predict(net, lnes, device, t, mano_gt):
     global one_euro_filter
@@ -182,8 +216,8 @@ def predict(net, lnes, device, t, mano_gt):
     joints_3d_smoothed = torch.cat((joints_smoothed_right, joints_smoothed_left), 1)
     joints_intrinsic_smoothed = torch.matmul(joints_3d_smoothed, torch.transpose(mat_cam, 0, 1))
     joints_2d_smoothed = joints_intrinsic_smoothed[..., 0:2] / joints_intrinsic_smoothed[..., [2]]
-    joints_3d_smoothed = torch.unsqueeze(joints_3d_smoothed, 0).cpu().numpy()
-    joints_2d_smoothed = torch.unsqueeze(joints_2d_smoothed, 0).cpu().numpy()
+    joints_3d_smoothed = joints_3d_smoothed.squeeze(0).cpu().numpy()
+    joints_2d_smoothed = joints_2d_smoothed.squeeze(0).cpu().numpy()
 
     # out_net = (params_axisangle, vertices_output, joints_3d_output, joints_2d_output, mask_output)
     out_net = (params_axisangle, vertices_output, joints_3d_output, joints_2d_output)
@@ -251,8 +285,15 @@ if __name__ == "__main__":
     distance_joints_3d_smoothed_mean = 0.0
     loss_pen_mean = 0.0
     loss_pen_smoothed_mean = 0.0
+    num_steps_pck2dp = 100
+    num_steps_pck3d = 100
+    dist_max_pck3d = 0.1
+    pck2dp = np.zeros(num_steps_pck2dp + 1)
+    pck3d = np.zeros(num_steps_pck3d + 1)
+    pck2dp_smoothed = np.zeros(num_steps_pck2dp + 1)
+    pck3d_smoothed = np.zeros(num_steps_pck3d + 1)
 
-    for i_f, f_float in enumerate(tqdm(np.arange(0, len(events), fps_in / fps_out))):
+    for i_f, f_float in enumerate(tqdm(np.arange(l_lnes, len(events), fps_in / fps_out))):
         f = int(round(f_float))     # in milliseconds
 
         mano_gt_f = mano_gt_all[f] if mano_gt_all is not None else None
@@ -324,6 +365,11 @@ if __name__ == "__main__":
             distance_joints_2d_mean += distance_joints_2d
             distance_joints_2d_smoothed_mean += distance_joints_2d_smoothed
 
+            pck2dp += pck2dp_frame(joints_2d_pred, joints_2d_gt, num_steps=100)
+            pck3d += pck3d_frame(joints_3d_pred, joints_3d_gt, num_steps=100, dist_max=0.1)
+            pck2dp_smoothed += pck2dp_frame(joints_2d_pred_smoothed, joints_2d_gt, num_steps=100)
+            pck3d_smoothed += pck3d_frame(joints_3d_pred_smoothed, joints_3d_gt, num_steps=100, dist_max=0.1)
+
         # cv.imwrite(os.path.join(dir_output, name_sequence, 'masks', 'frame_'
         #                         + str(i_f + 1).zfill(len(str(int(round(len(events) * fps_out / fps_in)) - 1))))
         #            + '.png', mask_out[:, :, ::-1])
@@ -341,11 +387,40 @@ if __name__ == "__main__":
         distance_joints_3d_smoothed_mean /= num_iterations
         distance_joints_2d_mean /= num_iterations
         distance_joints_2d_smoothed_mean /= num_iterations
+        pck2dp /= num_iterations
+        pck3d /= num_iterations
+        pck2dp_smoothed /= num_iterations
+        pck3d_smoothed /= num_iterations
+
+        x_pck2dp = np.linspace(0, 1, num_steps_pck2dp + 1)
+        x_pck3d = np.linspace(0, 1, num_steps_pck3d + 1)
+        auc_pck2dp = metrics.auc(x_pck2dp, pck2dp)
+        auc_pck3d = metrics.auc(x_pck3d, pck3d)
+        auc_pck2dp_smoothed = metrics.auc(x_pck2dp, pck2dp_smoothed)
+        auc_pck3d_smoothed = metrics.auc(x_pck3d, pck3d_smoothed)
+
+        Path(os.path.join(dir_sequence, 'pck')).mkdir(parents=True, exist_ok=True)
+
+        with open(os.path.join(dir_sequence, 'pck', 'pck2dp.npy'), 'wb') as f:
+            np.save(f, pck2dp)
+
+        with open(os.path.join(dir_sequence, 'pck', 'pck3d.npy'), 'wb') as f:
+            np.save(f, pck3d)
+
+        with open(os.path.join(dir_sequence, 'pck', 'pck2dp_smoothed.npy'), 'wb') as f:
+            np.save(f, pck2dp_smoothed)
+
+        with open(os.path.join(dir_sequence, 'pck', 'pck3d_smoothed.npy'), 'wb') as f:
+            np.save(f, pck3d_smoothed)
 
         print('mean distance of 3d joints', distance_joints_3d_mean)
         print('mean distance of 3d joints (smoothed)', distance_joints_3d_smoothed_mean)
         print('mean distance of 2d joints', distance_joints_2d_mean)
         print('mean distance of 2d joints (smoothed)', distance_joints_2d_smoothed_mean)
+        print('2D-AUCp', auc_pck2dp)
+        print('2D-AUCp (smoothed)', auc_pck2dp_smoothed)
+        print('3D-AUC', auc_pck3d)
+        print('3D-AUC (smoothed)', auc_pck3d_smoothed)
 
     out_mano = os.path.join(dir_sequence, 'sequence_mano.pkl')
     out_mano_smoothed = os.path.join(dir_sequence, 'sequence_mano_smoothed.pkl')
