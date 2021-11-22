@@ -57,6 +57,16 @@ one_euro_filter = None
 
 # evaluate l2 loss
 def evaluate_l2(out_1, out_2):
+    # relative to root joint
+    out_1[0:21, :] = out_1[0:21, :] - out_1[0, :]
+    out_1[21:42, :] = out_1[21:42, :] - out_1[21, :]
+    out_2[0:21, :] = out_2[0:21, :] - out_2[0, :]
+    out_2[21:42, :] = out_2[21:42, :] - out_2[21, :]
+
+    # remove root joints
+    out_1 = np.concatenate((out_1[1:21, :], out_1[22:42, :]), 0)
+    out_2 = np.concatenate((out_2[1:21, :], out_2[22:42, :]), 0)
+
     diff = out_1 - out_2
     norm = np.linalg.norm(diff, axis=1)
 
@@ -103,10 +113,23 @@ def load_mano(name_gt):
 
 # palm-normalized 2d-pck
 def pck2dp_frame(joints_pred, joints_gt, num_steps=100):
+    # palm lengths
     len_palm_right_gt = np.linalg.norm(joints_gt[9, :] - joints_gt[0, :])
     len_palm_left_gt = np.linalg.norm(joints_gt[30, :] - joints_gt[21, :])
-    dists_right = np.linalg.norm(joints_pred[0:21, :] - joints_gt[0:21, :], axis=1)
-    dists_left = np.linalg.norm(joints_pred[21:42, :] - joints_gt[21:42, :], axis=1)
+
+    # relative to root joints
+    joints_pred[0:21, :] = joints_pred[0:21, :] - joints_pred[0, :]
+    joints_pred[21:42, :] = joints_pred[21:42, :] - joints_pred[21, :]
+    joints_gt[0:21, :] = joints_gt[0:21, :] - joints_gt[0, :]
+    joints_gt[21:42, :] = joints_gt[21:42, :] - joints_gt[21, :]
+
+    # remove root joints
+    joints_pred = np.concatenate((joints_pred[1:21, :], joints_pred[22:42, :]), 0)
+    joints_gt = np.concatenate((joints_gt[1:21, :], joints_gt[22:42, :]), 0)
+
+    # compute distances
+    dists_right = np.linalg.norm(joints_pred[0:20, :] - joints_gt[0:20, :], axis=1)
+    dists_left = np.linalg.norm(joints_pred[20:40, :] - joints_gt[20:40, :], axis=1)
     pck = np.zeros(num_steps + 1)
 
     for s in range(num_steps + 1):
@@ -115,13 +138,24 @@ def pck2dp_frame(joints_pred, joints_gt, num_steps=100):
         pck[s] += (dists_right < dist_right_s).sum()
         pck[s] += (dists_left < dist_left_s).sum()
 
-    pck /= 42
+    pck /= 40
 
     return pck
 
 
 # 3d-pck
 def pck3d_frame(joints_pred, joints_gt, num_steps=100, dist_max=0.1):
+    # relative to root joint
+    joints_pred[0:21, :] = joints_pred[0:21, :] - joints_pred[0, :]
+    joints_pred[21:42, :] = joints_pred[21:42, :] - joints_pred[21, :]
+    joints_gt[0:21, :] = joints_gt[0:21, :] - joints_gt[0, :]
+    joints_gt[21:42, :] = joints_gt[21:42, :] - joints_gt[21, :]
+
+    # remove root joints
+    joints_pred = np.concatenate((joints_pred[1:21, :], joints_pred[22:42, :]), 0)
+    joints_gt = np.concatenate((joints_gt[1:21, :], joints_gt[22:42, :]), 0)
+
+    # compute distances
     dists = np.linalg.norm(joints_pred - joints_gt, axis=1)
     pck = np.zeros(num_steps + 1)
     
@@ -129,7 +163,7 @@ def pck3d_frame(joints_pred, joints_gt, num_steps=100, dist_max=0.1):
         dist_s = dist_max * s / num_steps
         pck[s] += (dists < dist_s).sum()
 
-    pck /= 42
+    pck /= 40
 
     return pck
 
@@ -293,7 +327,10 @@ if __name__ == "__main__":
     pck2dp_smoothed = np.zeros(num_steps_pck2dp + 1)
     pck3d_smoothed = np.zeros(num_steps_pck3d + 1)
 
-    for i_f, f_float in enumerate(tqdm(np.arange(l_lnes, len(events), fps_in / fps_out))):
+    gt_all_2d = []
+    gt_all_3d = []
+
+    for i_f, f_float in enumerate(tqdm(np.arange(l_lnes, len(events), fps_in / fps_out))):  # 0
         f = int(round(f_float))     # in milliseconds
 
         mano_gt_f = mano_gt_all[f] if mano_gt_all is not None else None
@@ -305,6 +342,9 @@ if __name__ == "__main__":
         mano_pred, verts_pred, joints_3d_pred, joints_2d_pred = out_net
         mano_pred_smoothed, verts_pred_smoothed, joints_3d_pred_smoothed, joints_2d_pred_smoothed = out_smoothed
         mano_gt, verts_gt, joints_3d_gt, joints_2d_gt = out_gt
+
+        gt_all_2d.append(joints_2d_gt)
+        gt_all_3d.append(joints_3d_gt)
 
         seq_dict = {i_f: [{'pose': mano_pred[0:48],
                            'shape': np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
@@ -412,6 +452,18 @@ if __name__ == "__main__":
 
         with open(os.path.join(dir_sequence, 'pck', 'pck3d_smoothed.npy'), 'wb') as f:
             np.save(f, pck3d_smoothed)
+
+        gt_all_2d = np.stack(gt_all_2d, 0)
+        gt_all_3d = np.stack(gt_all_3d, 0)
+
+        print('gt_all_2d.shape', gt_all_2d.shape)
+        print('gt_all_3d.shape', gt_all_3d.shape)
+
+        with open(os.path.join(dir_sequence, '2d_gt.npy'), 'wb') as f:
+            np.save(f, gt_all_2d)
+
+        with open(os.path.join(dir_sequence, '3d_gt.npy'), 'wb') as f:
+            np.save(f, gt_all_3d)
 
         print('mean distance of 3d joints', distance_joints_3d_mean)
         print('mean distance of 3d joints (smoothed)', distance_joints_3d_smoothed_mean)
