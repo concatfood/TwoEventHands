@@ -18,6 +18,7 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 # import torch.nn.functional as F
 from utils.dataset import BasicDataset
+from utils.kalman_filter import KalmanFilterWrapper
 from utils.one_euro_filter import OneEuroFilter
 
 
@@ -52,6 +53,8 @@ pen_distance = collisions_loss.DistanceFieldPenetrationLoss(sigma=sigma, point2p
                                                             penalize_outside=penalize_outside, linear_max=linear_max)
 
 # temporal filtering
+filter_variant = 'kalman'
+kalman_filter = None
 one_euro_filter = None
 
 
@@ -171,6 +174,7 @@ def pck3d_frame(joints_pred, joints_gt, num_steps=100, dist_max=0.1):
 # predict and MANO parameters
 def predict(net, lnes, device, t, mano_gt):
     global one_euro_filter
+    global kalman_filter
 
     net.eval()
 
@@ -215,12 +219,21 @@ def predict(net, lnes, device, t, mano_gt):
         joints_3d_output = joints_3d_output.cpu().numpy()
         joints_2d_output = joints_2d_output.cpu().numpy()
 
-    if one_euro_filter is None:
-        one_euro_filter = OneEuroFilter(t, params, dx0=np.array([0.0]), min_cutoff=np.array([1.0]),
-                                        beta=np.array([0.0]), d_cutoff=np.array([1.0]))
-        params_smoothed = params
+    params_smoothed = None
+
+    if one_euro_filter is None and kalman_filter is None:
+        if filter_variant == 'kalman':
+            kalman_filter = KalmanFilterWrapper(params, dt=0.001, r=5.0, var=0.1)
+            params_smoothed = params
+        elif filter_variant == 'one_euro':
+            one_euro_filter = OneEuroFilter(t, params, dx0=np.array([0.0]), min_cutoff=np.array([1.0]),
+                                            beta=np.array([0.0]), d_cutoff=np.array([1.0]))
+            params_smoothed = params
     else:
-        params_smoothed = one_euro_filter(t, params)
+        if filter_variant == 'kalman':
+            params_smoothed = one_euro_filter(t, params)
+        elif filter_variant == 'one_euro':
+            params_smoothed = kalman_filter(params)
 
     params_axisangle = np.zeros(102)
     params_axisangle_smoothed = np.zeros(102)
