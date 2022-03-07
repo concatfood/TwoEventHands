@@ -34,7 +34,7 @@ res = (240, 180)
 far = 1.0
 fov = 45.0
 fovy = np.radians(fov)
-focal = 0.5 * res[1] / math.tan(fovy / 2.0)
+focal = 0.5 * res[1] / math.tan(fovy / 2.0)     # constant as of now
 mat_cam = np.array([[focal, 0.0, -res[0] / 2.0],    # y and z negative because of different coordinate systems
                     [0.0, -focal, -res[1] / 2.0],
                     [0.0, 0.0, -1.0]])
@@ -153,6 +153,26 @@ class BasicDataset(Dataset):
         joints_left = joints_left.numpy().squeeze()
 
         return np.concatenate((vertices_right, vertices_left), 0), np.concatenate((joints_right, joints_left), 0)
+
+    # converts hand parameters mano parameters
+    @classmethod
+    def hands_to_mano(cls, hand_params, f, roots):
+        mano_params = hand_params
+        mano_params[96:99] = np.concatenate((hand_params[96:98], f)) * hand_params[98] - roots[0]
+        mano_params[195:198] = np.concatenate((hand_params[195:197], f)) * hand_params[197] - roots[1]
+
+        return mano_params
+
+    # converts mano parameters to hand parameters
+    @classmethod
+    def mano_to_hands(cls, mano_params, joints_3d, joints_2d, f):
+        hand_params = mano_params
+        hand_params[96:98] = joints_2d[0, :]
+        hand_params[98] = joints_3d[0, 2] / f
+        hand_params[195:197] = joints_2d[21, :]
+        hand_params[197] = joints_3d[21, 2] / f
+
+        return hand_params
 
     # convert events to LNES frames
     @classmethod
@@ -352,10 +372,11 @@ class BasicDataset(Dataset):
 
         vertices, joints_3d = self.compute_vertices_and_joints(mano_params, self.layer_mano_right, self.layer_mano_left)
         joints_2d = self.project_vertices(joints_3d, mat_cam)
+        hand_params = self.mano_to_hands(mano_params, joints_3d, joints_2d, focal)
 
         return {
+            'hands': torch.from_numpy(hand_params).type(torch.FloatTensor),
             'lnes': torch.from_numpy(lnes).type(torch.FloatTensor),
-            'mano': torch.from_numpy(mano_params).type(torch.FloatTensor),
             # 'masks': torch.from_numpy(masks).type(torch.FloatTensor),
             'joints_3d': torch.from_numpy(joints_3d).type(torch.FloatTensor),
             'joints_2d': torch.from_numpy(joints_2d).type(torch.FloatTensor)
