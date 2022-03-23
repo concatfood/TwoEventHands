@@ -31,13 +31,13 @@ interval_masks = 10
 
 # camera parameters
 res = (240, 180)
-far = 1.0
 fov = 45.0
 fovy = np.radians(fov)
 focal = 0.5 * res[1] / math.tan(fovy / 2.0)     # constant as of now
 mat_cam = np.array([[focal, 0.0, -res[0] / 2.0],    # y and z negative because of different coordinate systems
                     [0.0, -focal, -res[1] / 2.0],
                     [0.0, 0.0, -1.0]])
+mat_cam_inv = np.linalg.inv(mat_cam)
 
 # camera position relative to hands in MANO space
 hands_avg = np.array([0.0, 0.0, -0.5])
@@ -158,8 +158,10 @@ class BasicDataset(Dataset):
     @classmethod
     def hands_to_mano(cls, hand_params, f, roots):
         mano_params = hand_params
-        mano_params[96:99] = np.concatenate((hand_params[96:98], f)) * hand_params[98] - roots[0]
-        mano_params[195:198] = np.concatenate((hand_params[195:197], f)) * hand_params[197] - roots[1]
+        mano_params[96:99] = (np.concatenate((hand_params[96:98], np.array([1]))) * f).dot(mat_cam_inv.transpose())\
+                             * hand_params[98] - roots[0]
+        mano_params[195:198] = (np.concatenate((hand_params[195:197], np.array([1]))) * f).dot(mat_cam_inv.transpose())\
+                               * hand_params[197] - roots[1]
 
         return mano_params
 
@@ -167,6 +169,7 @@ class BasicDataset(Dataset):
     @classmethod
     def mano_to_hands(cls, mano_params, joints_3d, joints_2d, f):
         hand_params = mano_params
+        joints_3d = joints_3d.dot(mat_cam.transpose())
         hand_params[96:98] = joints_2d[0, :]
         hand_params[98] = joints_3d[0, 2] / f
         hand_params[195:197] = joints_2d[21, :]
@@ -325,7 +328,7 @@ class BasicDataset(Dataset):
         i_file_finish = f_finish // interval
 
         len_digits_interval = len(str((self.num_frames[n] - 1) // interval))
-        # len_digits_interval_masks = len(str((self.num_frames[n] - 1) // interval_masks))
+        len_digits_interval_masks = len(str((self.num_frames[n] - 1) // interval_masks))
 
         # start file
         file_events_start = os.path.join(self.events_dir, prefix_dataset + name + '_' + aa + '_' + ap,
@@ -362,13 +365,13 @@ class BasicDataset(Dataset):
 
         mano_params = self.preprocess_mano(frame_mano, aa, ap, self.roots)
 
-        # file_mask = os.path.join(self.mask_dir, prefix_dataset + name + '_' + aa + '_' + ap,
-        #                          str(f // interval_masks).zfill(len_digits_interval_masks) + '.npz')
-        #
-        # with np.load(file_mask) as data:
-        #     masks = data['arr_0'][f % interval_masks]
-        #
-        # masks = self.preprocess_mask(masks)
+        file_mask = os.path.join(self.mask_dir, prefix_dataset + name + '_' + aa + '_' + ap,
+                                 str(f // interval_masks).zfill(len_digits_interval_masks) + '.npz')
+
+        with np.load(file_mask) as data:
+            masks = data['arr_0'][f % interval_masks]
+
+        masks = self.preprocess_mask(masks)
 
         vertices, joints_3d = self.compute_vertices_and_joints(mano_params, self.layer_mano_right, self.layer_mano_left)
         joints_2d = self.project_vertices(joints_3d, mat_cam)
@@ -377,7 +380,7 @@ class BasicDataset(Dataset):
         return {
             'hands': torch.from_numpy(hand_params).type(torch.FloatTensor),
             'lnes': torch.from_numpy(lnes).type(torch.FloatTensor),
-            # 'masks': torch.from_numpy(masks).type(torch.FloatTensor),
+            'masks': torch.from_numpy(masks).type(torch.FloatTensor),
             'joints_3d': torch.from_numpy(joints_3d).type(torch.FloatTensor),
             'joints_2d': torch.from_numpy(joints_2d).type(torch.FloatTensor)
         }

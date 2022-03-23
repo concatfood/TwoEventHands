@@ -1,5 +1,5 @@
 import argparse
-# import cv2 as cv
+import cv2 as cv
 from manopth.manolayer import ManoLayer
 import math
 from mesh_intersection.bvh_search_tree import BVH
@@ -16,7 +16,7 @@ from TEHNet import TEHNet
 from tqdm import tqdm
 import torch
 from torch.utils.tensorboard import SummaryWriter
-# import torch.nn.functional as F
+import torch.nn.functional as F
 from utils.dataset import BasicDataset
 from utils.kalman_filter import KalmanFilterWrapper
 from utils.one_euro_filter import OneEuroFilter
@@ -183,9 +183,6 @@ def predict(net, lnes, device, t, mano_gt, roots):
 
     # compute ground truth joint positions
     if mano_gt is not None:
-        mano_gt = np.concatenate((mano_gt[0]['pose'], mano_gt[0]['trans'],
-                                  mano_gt[1]['pose'], mano_gt[1]['trans']))
-
         params_axisangle_gt_pth = torch.unsqueeze(torch.from_numpy(mano_gt), 0).float().cuda()
         vertices_gt_right, joints_gt_right = net.layer_mano_right(params_axisangle_gt_pth[:, 0:48], th_betas=shape,
                                                                   th_trans=params_axisangle_gt_pth[:, 48:51])
@@ -207,17 +204,17 @@ def predict(net, lnes, device, t, mano_gt, roots):
     lnes = lnes.to(device=device, dtype=torch.float32)
 
     with torch.no_grad():
-        # hands_output, vertices_output, mask_output, joints_3d_output, joints_2d_output = net(lnes)
-        hands_output, vertices_output, joints_3d_output, joints_2d_output = net(lnes)
+        hands_output, vertices_output, mask_output, joints_3d_output, joints_2d_output = net(lnes)
+        # hands_output, vertices_output, joints_3d_output, joints_2d_output = net(lnes)
         params = hands_output.squeeze(0)
-        # mask_output = mask_output.squeeze(0)
-        # mask_output = F.softmax(mask_output, dim=0)
+        mask_output = mask_output.squeeze(0)
+        mask_output = F.softmax(mask_output, dim=0)
         joints_3d_output = joints_3d_output.squeeze(0)
         joints_2d_output = joints_2d_output.squeeze(0)
         params = params.cpu().numpy()
-        # mask_output = mask_output.cpu().numpy()
-        # indices_max = np.argmax(mask_output, axis=0)
-        # mask_output = 255 * (np.arange(3) == indices_max[..., None]).astype(int)
+        mask_output = mask_output.cpu().numpy()
+        indices_max = np.argmax(mask_output, axis=0)
+        mask_output = 255 * (np.arange(3) == indices_max[..., None]).astype(int)
         joints_3d_output = joints_3d_output.cpu().numpy()
         joints_2d_output = joints_2d_output.cpu().numpy()
 
@@ -233,9 +230,9 @@ def predict(net, lnes, device, t, mano_gt, roots):
             params_smoothed = params
     else:
         if filter_variant == 'kalman':
-            params_smoothed = one_euro_filter(t, params)
-        elif filter_variant == 'one_euro':
             params_smoothed = kalman_filter(params)
+        elif filter_variant == 'one_euro':
+            params_smoothed = one_euro_filter(t, params)
 
     # convert to MANO format
     params = BasicDataset.hands_to_mano(params, focal, roots)
@@ -272,8 +269,8 @@ def predict(net, lnes, device, t, mano_gt, roots):
     joints_3d_smoothed = joints_3d_smoothed.squeeze(0).cpu().numpy()
     joints_2d_smoothed = joints_2d_smoothed.squeeze(0).cpu().numpy()
 
-    # out_net = (params_axisangle, vertices_output, joints_3d_output, joints_2d_output, mask_output)
-    out_net = (params_axisangle, vertices_output, joints_3d_output, joints_2d_output)
+    out_net = (params_axisangle, vertices_output, joints_3d_output, joints_2d_output, mask_output)
+    # out_net = (params_axisangle, vertices_output, joints_3d_output, joints_2d_output)
     out_smoothed = (params_axisangle_smoothed, vertices_smoothed, joints_3d_smoothed, joints_2d_smoothed)
     out_gt = (mano_gt, vertices_gt, joints_3d_gt, joints_2d_gt)
 
@@ -308,17 +305,17 @@ if __name__ == "__main__":
     net.load_state_dict(torch.load(os.path.join('checkpoints', args.model), map_location=device)['model'])
 
     layer_mano_right = ManoLayer(flat_hand_mean=True, side='right', mano_root='mano', use_pca=False,
-                                 root_rot_mode='axisang', joint_rot_mode='axisang')
+                                 root_rot_mode='axisang', joint_rot_mode='axisang').cuda()
     layer_mano_left = ManoLayer(flat_hand_mean=True, side='left', mano_root='mano', use_pca=False,
-                                root_rot_mode='axisang', joint_rot_mode='axisang')
+                                root_rot_mode='axisang', joint_rot_mode='axisang').cuda()
 
-    pose_zero = torch.zeros((1, 48))
-    shape_zero = torch.zeros((1, 10))
-    trans_zero = torch.zeros((1, 3))
+    pose_zero = torch.zeros((1, 48)).cuda()
+    shape_zero = torch.zeros((1, 10)).cuda()
+    trans_zero = torch.zeros((1, 3)).cuda()
 
     vertices_right_zero, joints_right_zero = layer_mano_right(pose_zero, th_betas=shape_zero, th_trans=trans_zero)
     vertices_left_zero, joints_left_zero = layer_mano_left(pose_zero, th_betas=shape_zero, th_trans=trans_zero)
-    roots = [joints_right_zero[0, 0, :].numpy(), joints_left_zero[0, 0, :].numpy()]
+    roots = [joints_right_zero[0, 0, :].cpu().numpy(), joints_left_zero[0, 0, :].cpu().numpy()]
 
     faces = torch.cat((layer_mano_right.th_faces, layer_mano_left.th_faces + vertices_right_zero.shape[1]), 0)\
         .to(device='cuda', dtype=torch.int64)
@@ -326,7 +323,7 @@ if __name__ == "__main__":
     dir_sequence = os.path.join(dir_output, name_sequence)
     Path(dir_sequence).mkdir(parents=True, exist_ok=True)
 
-    # Path(os.path.join(dir_output, name_sequence, 'masks')).mkdir(parents=True, exist_ok=True)
+    Path(os.path.join(dir_output, name_sequence, 'masks')).mkdir(parents=True, exist_ok=True)
 
     writer = SummaryWriter(os.path.join(dir_sequence, 'metrics'))
 
@@ -350,34 +347,36 @@ if __name__ == "__main__":
     gt_all_2d = []
     gt_all_3d = []
 
-    for i_f, f_float in enumerate(tqdm(np.arange(l_lnes, len(events), fps_in / fps_out))):  # 0
+    # for i_f, f_float in enumerate(tqdm(np.arange(l_lnes, len(events), fps_in / fps_out))):  # 0
+    for i_f, f_float in enumerate(np.arange(l_lnes, len(events), fps_in / fps_out)):    # 0
         f = int(round(f_float))     # in milliseconds
 
         mano_gt_f = mano_gt_all[f] if mano_gt_all is not None else None
         mano_gt_f = np.concatenate((mano_gt_f[0]['pose'], mano_gt_f[0]['trans'],
                                     mano_gt_f[1]['pose'], mano_gt_f[1]['trans']))
-        params_axisangle_gt_f_pth = torch.unsqueeze(torch.from_numpy(mano_gt_f), 0).float()
+        params_axisangle_gt_f_pth = torch.unsqueeze(torch.from_numpy(mano_gt_f).cuda(), 0).float()
 
         vertices_right_gt_f, joints_right_gt_f = layer_mano_right(params_axisangle_gt_f_pth[:, 0:48], th_betas=shape,
                                                                   th_trans=params_axisangle_gt_f_pth[:, 48:51])
         vertices_left_gt_f, joints_left_gt_f = layer_mano_left(params_axisangle_gt_f_pth[:, 51:99], th_betas=shape,
                                                                th_trans=params_axisangle_gt_f_pth[:, 99:102])
 
-        vertices_right_gt_f = vertices_right_gt_f.numpy().squeeze()
-        vertices_left_gt_f = vertices_left_gt_f.numpy().squeeze()
-        joints_right_gt_f = joints_right_gt_f.numpy().squeeze()
-        joints_left_gt_f = joints_left_gt_f.numpy().squeeze()
+        vertices_right_gt_f = vertices_right_gt_f.cpu().numpy().squeeze()
+        vertices_left_gt_f = vertices_left_gt_f.cpu().numpy().squeeze()
+        joints_right_gt_f = joints_right_gt_f.cpu().numpy().squeeze()
+        joints_left_gt_f = joints_left_gt_f.cpu().numpy().squeeze()
 
         vertices_gt_f = np.concatenate((vertices_right_gt_f, vertices_left_gt_f), 0)
         joints_3d_gt_f = np.concatenate((joints_right_gt_f, joints_left_gt_f), 0)
-        joints_2d_gt_f = BasicDataset.project_vertices(joints_3d_gt_f, mat_cam)
+        joints_2d_gt_f = BasicDataset.project_vertices(joints_3d_gt_f, mat_cam_np)
 
         frames = events[max(0, f - l_lnes + 1):f + 1]
         lnes = BasicDataset.preprocess_events(frames, f - l_lnes + 1, res)
         out_net, out_smoothed, out_gt = predict(net=net, lnes=lnes, device=device, t=f / 1000, mano_gt=mano_gt_f,
                                                 roots=roots)
-        # mano_pred, joints_3d_pred, joints_2d_pred, mask_out = out_net
-        mano_pred, verts_pred, joints_3d_pred, joints_2d_pred = out_net
+        mano_pred, verts_pred, joints_3d_pred, joints_2d_pred, mask_out = out_net
+        # mano_pred, verts_pred, joints_3d_pred, joints_2d_pred = out_net
+
         mano_pred_smoothed, verts_pred_smoothed, joints_3d_pred_smoothed, joints_2d_pred_smoothed = out_smoothed
         mano_gt, verts_gt, joints_3d_gt, joints_2d_gt = out_gt
 
@@ -448,9 +447,9 @@ if __name__ == "__main__":
             pck2dp_smoothed += pck2dp_frame(joints_2d_pred_smoothed, joints_2d_gt, num_steps=100)
             pck3d_smoothed += pck3d_frame(joints_3d_pred_smoothed, joints_3d_gt, num_steps=100, dist_max=0.1)
 
-        # cv.imwrite(os.path.join(dir_output, name_sequence, 'masks', 'frame_'
-        #                         + str(i_f + 1).zfill(len(str(int(round(len(events) * fps_out / fps_in)) - 1))))
-        #            + '.png', mask_out[:, :, ::-1])
+        cv.imwrite(os.path.join(dir_output, name_sequence, 'masks', 'frame_'
+                                + str(i_f + 1).zfill(len(str(int(round(len(events) * fps_out / fps_in)) - 1))))
+                   + '.png', mask_out[:, :, ::-1])
 
     num_iterations = int(math.floor(len(events) * fps_out / fps_in))
 
