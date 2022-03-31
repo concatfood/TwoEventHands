@@ -222,7 +222,7 @@ def predict(net, lnes, device, t, mano_gt, roots):
 
     if one_euro_filter is None and kalman_filter is None:
         if filter_variant == 'kalman':
-            kalman_filter = KalmanFilterWrapper(params, dt=0.001, r=5.0, var=0.1)
+            kalman_filter = KalmanFilterWrapper(params, dt=1000/30, r=5.0, var=0.1)
             params_smoothed = params
         elif filter_variant == 'one_euro':
             one_euro_filter = OneEuroFilter(t, params, dx0=np.array([0.0]), min_cutoff=np.array([1.0]),
