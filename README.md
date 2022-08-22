@@ -1,5 +1,7 @@
 # TwoEventHands
 
+![architecture](architecture.png)
+
 In this project, we predict 3D hand poses of two hands based on LNES frames computed using events generated either by an event camera or an event simulator.
 For this, we use [MANO](https://mano.is.tue.mpg.de/) parameters.
 
